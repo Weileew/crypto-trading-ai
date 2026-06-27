@@ -70,6 +70,42 @@ cron (every 30m, no_agent=True)
             └─ format_summary()              # output table with Trail column
 ```
 
+## Output Format (preferred UX)
+
+The paper trading summary uses an emoji-dashboard layout for Telegram delivery:
+
+```
+📊 **Paper Trading**
+💵 Cash: $9024.24  ·  💰 Equity: $9553.81  ·  📉 Return: -4.46%  ·  🎯 2 open  ·  💰 Start: $10000
+📁 *legacy*: 🟢 2 · $+29.24
+```
+
+- **Summary bar** → single compact line with emoji indicators (📉📈 for return direction, 🎯 for open count, 💰💵 for cash/equity). Avoid stacked metric tables — one line is scannable, four rows is not.
+- **Strategy P&L line** → per-strategy with 🟢/🔴/⚪ prefix so you can spot which strategy is performing at a glance.
+- **Open positions table** → 4 columns only: `Symbol | Entry → Current | P&L | Trail`. The Strategy column is redundant (shown in summary). Entry→Current is rendered as `{entry} → **{current}**` to visualise price movement.
+- **Closed trades table** → 5 columns: `Date | Symbol | Exit | P&L | Reason`. P&L gets a 🟢/🔴/⚪ prefix.
+- **P&L emojis**: 🟢 positive, 🔴 negative, ⚪ flat/zero.
+- **Trailing stop**: 🔒 $price when active, blank otherwise.
+- **Section headers** → bold with emoji: `**🟢 Open Positions**`, `**📋 Recently Closed**`.
+- **No raw dollar/P&L column split** — the P&L column shows the emoji + percentage; the dollar value is absorbed into the summary bar.
+
+### HTML Dashboard Image Delivery
+
+Telegram tables have alignment issues with multi-column data. For the M2M cron, an alternative delivery method generates an HTML dashboard and serves it as a screenshot image:
+
+1. Run `python3 scripts/paper_trader.py --update --summary` to get current state
+2. Read `portfolio.json`, `ledger.json`, and `journal.db` outcomes
+3. Generate a self-contained dark-mode HTML dashboard (at `reports/paper_trading_dashboard.html`)
+4. Start a local HTTP server on 127.0.0.1:8899
+5. Use `browser_navigate` + `browser_vision` to screenshot
+6. Deliver the image via `MEDIA:<path>` in the cron response
+
+The HTML dashboard includes:
+- 4 summary cards (Equity, Cash, Return, Open count) with red/amber/green coloring
+- 6 metrics cards (Win Rate, Profit Factor, Avg P&L, Avg Win, Avg Loss, Total Signals)
+- Full closed trades table from journal outcomes (not ledger)
+- Best/worst/streak footer bar
+
 ## Bug History
 
 ### Bug 1: current_price_map key mismatch (2026-06-27)
@@ -88,10 +124,58 @@ Keys returned as lowercase CG IDs but looked up by uppercase portfolio symbols �
 `paper_executor.open_trades()` wrote positions with `stop_loss`/`take_profit` keys while `paper_trader.update_mark_to_market()` read `stop`/`target` keys → trailing stop and fixed stop both silently skipped.
 **Fix**: Unify to `stop`/`target` keys. Normalization in `_normalize_position()` handles both old and new keys.
 
-### Bug 5: Trailing stop → journal gap (known, unfixed)
-`update_mark_to_market()` closing via `trailing_stop` removes the position from portfolio.json but does not update the strategy journal. The journal signal stays "open" until manually reconciled. Orchestrator's `phase_validate_open` only checks fixed target/stop — trailing closures are invisible to the journal.
-**Impact**: Journal win rate undercounts, open signal count overcounts.
-**Workaround**: Run `strategy_journal.py close-signal` manually for trailed-out positions, or wait for a reconciliation fix.
+### Bug 5: M2M closed positions not persisted (2026-06-27 — precise root cause)
+
+`paper_trader.py --update` computed closed positions in memory via `update_mark_to_market()` but **never** called `save_portfolio()` or `save_ledger()`. The `--update` branch in `main()` had:
+- `update_mark_to_market(portfolio)` — modifies dict in memory
+- `_sync_closed_to_journal(closed)` — writes to journal.db
+- No save calls — portfolio.json and ledger.json unchanged on disk
+
+Result: every M2M cron tick re-closed the same positions (portfolio still had them on next load) and re-synced to journal, inflating journal.db with duplicates.
+
+**Fix**: `save_portfolio(portfolio)` and `save_ledger(ledger)` are now called immediately after the update block, before any conditional early-return.
+
+### Bug 6: `--update` fell through to default path (2026-06-27)
+
+When running `python3 scripts/paper_trader.py --update` (no `--summary`), the `--update` block had no `return`. Execution fell through to the default path, which ran `update_mark_to_market()` a second time — double M2M on the same tick.
+
+**Fix**: early-return after the update block when neither `--summary` nor `--paper-open` is set:
+```python
+if args.summary:
+    print(format_summary(portfolio, ledger))
+    return
+if not args.paper_open:
+    return
+```
+
+### Bug 7: Closed trades table header/column mismatch in `format_summary()` (2026-06-27)
+
+The `Recent closed trades` Markdown table had:
+- Header: `| Recent closed trades |` (single pseudo-column)
+- Divisor: `| --- | --- |` (2-column separator)
+- Data rows: 5+ columns with raw `entry=xxx` strings from legacy ledger entries
+
+Telegram mangled this into unreadable output.
+
+**Fix**: proper 6-column table:
+```
+| Closed At | Symbol | Exit | P&L ($) | P&L % | Reason |
+| --- | --- | --- | --- | --- | --- |
+```
+Exit price and reason are explicit columns. P&L% suppressed when empty.  
+**Rule**: every `format_summary()` table must have header column count === divisor column count === every data row column count.
+
+### Bug 8: Closed trades table blank when ledger has no closed entries (2026-06-27)
+
+`format_summary()` rendered nothing under `Recent closed trades` if `ledger.json` had no closed entries, even though `journal.db` outcomes existed. That hid post-close audit evidence.
+
+**Fix**: add a journal fallback in `paper_trader.py --summary` that injects recent `outcomes` joined with `signals.symbol` into the same `Recent closed trades` table.
+
+### Reconciliation rule
+
+- Prefer `journal.db` outcomes when `ledger.json` and `portfolio.json` disagree.
+- `journal.db` is append-only and auditable by signal ID; use it as the source of truth for closed trades.
+- Reproducible audit commands: `python3 scripts/paper_trader.py --update --summary` and `python3 scripts/audit_equity.py`.
 
 ## Position Close Reasons
 

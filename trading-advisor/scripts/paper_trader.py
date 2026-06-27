@@ -637,15 +637,51 @@ def format_summary(portfolio, ledger):
         )
     closed = [t for t in (ledger.get("trades") or []) if t.get("status") in ("closed", "exit") or t.get("closed_at")]
     recent_closed = closed[-10:]
-    if recent_closed:
-        lines += ["", "| Recent closed trades |", "| --- | --- |"]
-        for trade in recent_closed:
-            closed_at = (trade.get("closed_at") or "")[:10]
-            pnl = trade.get("pnl_usd") or trade.get("pnl") or trade.get("P&L")
-            pnl_pct = trade.get("pnl_pct")
-            lines.append(
-                f"| {closed_at} | {trade.get('symbol')} | {pnl} | {pnl_pct}% |"
+    lines += ["", "| Recent closed trades |", "| --- | --- | --- | --- |"]
+    shown = 0
+    for trade in recent_closed:
+        closed_at = (trade.get("closed_at") or "")[:19].replace("T", " ")
+        pnl_pct = trade.get("pnl_pct")
+        reason = trade.get("outcome") or trade.get("exit_reason") or trade.get("reason") or ""
+        if pnl_pct is not None:
+            pnl_s = f"{pnl_pct:+.2f}%"
+        else:
+            pnl_fallback = trade.get("pnl") or trade.get("pnl_usd") or trade.get("P&L")
+            pnl_s = f"{pnl_fallback:+.2f}%" if isinstance(pnl_fallback, (int, float)) else (str(pnl_fallback) if pnl_fallback is not None else "N/A")
+        entry = trade.get("entry_price") or trade.get("avg_entry") or trade.get("entry") or "N/A"
+        exit_price = trade.get("exit_price") or trade.get("Exit") or "N/A"
+        lines.append(
+            f"| {closed_at} | {trade.get('symbol', '?')} | entry={entry} | exit={exit_price} | {pnl_s} | {reason} |"
+        )
+        shown += 1
+    # Fallback: if ledger has no recent closed trades, pull from journal.db outcomes
+    if shown == 0:
+        try:
+            import importlib.util as _iu
+            _jp = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "scripts", "strategy_journal.py"
             )
+            if os.path.exists(_jp):
+                _spec = _iu.spec_from_file_location("_sj_fb", _jp)
+                _mod = _iu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.init_db()
+                rows = _mod.get_conn().execute(
+                    "SELECT o.closed_at, o.outcome, o.exit_price, o.pnl_pct, o.exit_reason, o.regime_at_close, s.symbol "
+                    "FROM outcomes o JOIN signals s ON s.id=o.signal_id ORDER BY o.id DESC LIMIT ?",
+                    (10,),
+                ).fetchall()
+                for r in rows:
+                    pnl_s = f"{r[3]:+.2f}%" if isinstance(r[3], (int, float)) else "N/A"
+                    lines.append(
+                        f"| {(r[0] or '')[:19].replace('T', ' ')} | {r[6] or '?'} | entry= | exit={r[2] if r[2] is not None else ''} | {pnl_s} | {r[4] or r[1] or ''} |"
+                    )
+                shown = len(rows)
+        except Exception:
+            pass
+    if shown == 0:
+        lines.append("| — | — | — | — | — | — |")
     return "\n".join(lines)
 
 
@@ -754,6 +790,8 @@ def main():
     if args.update:
         closed = update_mark_to_market(portfolio)
         synced = _sync_closed_to_journal(closed)
+        save_portfolio(portfolio)
+        save_ledger(ledger)
         if synced:
             print(f"  Journal: synced {synced} closed position(s)")
 
