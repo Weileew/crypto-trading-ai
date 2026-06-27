@@ -1,0 +1,54 @@
+{
+  "last_heartbeat": "2026-06-27T05:27:51.684395+00:00",
+  "generated_by": "health_heartbeat.py",
+  "scripts": {
+    "pre_market_snapshot.sh": {
+      "size": 813,
+      "last_modified": "2026-06-26T14:02:51.551519+00:00"
+    },
+    "paper_trader.py": {
+      "size": 18617,
+      "last_modified": "2026-06-27T04:21:03.702057+00:00"
+    },
+    "market_snapshot.py": {
+      "size": 1713,
+      "last_modified": "2026-06-26T14:02:51.527519+00:00"
+    },
+    "paper_executor.py": {
+      "size": 8883,
+      "last_modified": "2026-06-27T03:34:14.844849+00:00"
+    },
+    "daily_loop.py": {
+      "size": 1512,
+      "last_modified": "2026-06-27T02:50:36.789912+00:00"
+    },
+    "improve.py": {
+      "size": 2271,
+      "last_modified": "2026-06-27T02:40:15.012303+00:00"
+    },
+    "health_heartbeat.py": {
+      "size": 1263,
+      "last_modified": "2026-06-27T03:35:22.368589+00:00"
+    },
+    "trade_plan.py": {
+      "size": 5213,
+      "last_modified": "2026-06-26T14:52:53.705330+00:00"
+    },
+    "signal_validator.py": {
+      "size": 14759,
+      "last_modified": "2026-06-27T03:34:48.023721+00:00"
+    },
+    "smoke_test.py": {
+      "size": 5284,
+      "last_modified": "2026-06-27T02:59:21.663897+00:00"
+    },
+    "briefing.py": {
+      "size": 19671,
+      "last_modified": "2026-06-27T04:07:34.812171+00:00"
+    },
+    "free_data.py": {
+      "size": 10417,
+      "last_modified": "2026-06-27T02:39:53.999384+00:00"
+    }
+  }
+}

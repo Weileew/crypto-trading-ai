@@ -1,0 +1,25 @@
+---
+title: 'Empowering GUI Agents via Autonomous Experience Exploration and Hindsight Experience Utilization for Task Planning'
+authors: 'Tianyi Men, Zhuoran Jin, Pengfei Cao, Yubo Chen, Kang Liu, Jun Zhao'
+url: 'http://arxiv.org/abs/2606.27330v1'
+source: 'arxiv'
+query: 'crypto sentiment analysis'
+retrieved: '2026-06-26T14:20:11.506198+00:00'
+updated: '2026-06-25T17:44:48Z'
+category: 'pending_tag'
+relevance: 'tbd'
+---
+
+# Empowering GUI Agents via Autonomous Experience Exploration and Hindsight Experience Utilization for Task Planning
+
+## Source
+- arXiv: http://arxiv.org/abs/2606.27330v1
+
+## Summary
+Multimodal web agents can assist humans in operating repetitive GUI tasks, where effective task planning is essential for decomposing complex tasks into executable actions. While small open source MLLMs are cost efficient and privacy preserving compared with commercial large models, they suffer from weak planning and limited cross website generalization. To address these limitations, we introduce the planning experience exploration and utilization (PEEU) method, which autonomously explores environments to discover experiences and utilizes hindsight experience to synthesize strictly aligned, high level training data. To quantitatively analyze the generalization behaviors driving this performance, we propose the task decomposition hierarchical analysis framework (TDHAF) to systematically study compositional generalization across three task granularities: low, middle and high levels. Our analysis reveals that mastering low level atomic skills does not guarantee high level planning competence, while high level task training yields stronger OOD generalization. Experiments on real world benchmarks demonstrate PEEU's superior effectiveness: our 7B model achieves 30.6% accuracy, outperforming the much larger Qwen2.5-VL-32B model. These demonstrate constructing hindsight high level tasks and leveraging experiences is crucial for OOD planning abilities of small MLLMs.
+
+## Relevance
+- To be evaluated and tagged as microstructure / sentiment / onchain / strategy / risk.
+
+## Notes
+

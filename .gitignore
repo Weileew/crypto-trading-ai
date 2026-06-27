@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Hermes-specific
+node_modules/
+.lsp/
+
+# Temp/large data
+reports/latest_market_data.json
+trading-advisor/reports/latest_market_data.json
+
+# Keep reports
+!reports/daily_briefing_*.md
+!reports/health.json
+!reports/signal_performance.json

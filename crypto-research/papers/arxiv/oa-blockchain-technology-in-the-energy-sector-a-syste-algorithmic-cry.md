@@ -1,0 +1,28 @@
+---
+title: 'Blockchain technology in the energy sector: A systematic review of challenges and opportunities'
+authors: 'Merlinda Andoni, Valentin Robu, David Flynn, Simone Abram, Dale Geach, David Jenkins, Peter McCallum, Andrew Peacock'
+url: 'https://doi.org/10.1016/j.rser.2018.10.014'
+source: 'openalex/Renewable and Sustainable Energy Reviews'
+query: 'algorithmic crypto trading execution'
+retrieved: '2026-06-27T04:06:51.387983+00:00'
+year: '2018'
+doi: 'https://doi.org/10.1016/j.rser.2018.10.014'
+tier: 'C'
+category: 'pending_tag'
+---
+
+# Blockchain technology in the energy sector: A systematic review of challenges and opportunities
+
+- **Source**: OpenAlex (Renewable and Sustainable Energy Reviews)
+- **Tier**: C (supplementary)
+- **Year**: 2018
+- **DOI**: https://doi.org/10.1016/j.rser.2018.10.014
+
+## Abstract
+Blockchains or distributed ledgers are an emerging technology that has drawn considerable interest from energy supply firms, startups, technology developers, financial institutions, national governments and the academic community. Numerous sources coming from these backgrounds identify blockchains as having the potential to bring significant benefits and innovation. Blockchains promise transparent, tamper-proof and secure systems that can enable novel business solutions, especially when combined with smart contracts. This work provides a comprehensive overview of fundamental principles that underpin blockchain technologies, such as system architectures and distributed consensus algorithms. Next, we focus on blockchain solutions for the energy industry and inform the state-of-the-art by thoroughly reviewing the literature and current business cases. To our knowledge, this is one of the first academic, peer-reviewed works to provide a systematic review of blockchain activities and initiatives in the energy sector. Our study reviews 140 blockchain research projects and startups from which we construct a map of the potential and relevance of blockchains for energy applications. These initiatives were systematically classified into different groups according to the field of activity, implementation platform and consensus strategy used.1 Opportunities, potential challenges and limitations for a number of use cases are discussed, ranging from emerging peer-to-peer (P2P) energy trading and Internet of Things (IoT) applications, to decentralised marketplaces, electric vehicle charging and e-mobility. For each of these use cases, our contribution is twofold: first, in identifying the technical challenges that blockchain technology can solve for that application as well as its potential drawbacks, and second in briefly presenting the research and industrial projects and startups that are currently applying blockchain technology to that area. The paper ends with a discussion of challenges and market barriers the technology needs to overcome to get past the hype phase, prove its commercial viability and finally be adopted in the mainstream.
+
+## Relevance
+- To be evaluated and tagged as microstructure / sentiment / onchain / strategy / risk / execution.
+
+## Notes
+

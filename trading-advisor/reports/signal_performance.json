@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-06-27T04:19:13.086455+00:00",
+  "signals": [
+    {
+      "date": "2026-06-26",
+      "symbol": "magma",
+      "name": "Magma Finance (magma)",
+      "entry": 0.721923,
+      "stop": 0.6967,
+      "target": 0.7797,
+      "exit_reason": "no_data",
+      "validation_status": "pending_validation"
+    },
+    {
+      "date": "2026-06-26",
+      "symbol": "velvet",
+      "name": "Velvet (velvet)",
+      "entry": 0.605781,
+      "stop": 0.5846,
+      "target": 0.6542,
+      "exit_reason": "no_data",
+      "validation_status": "pending_validation"
+    }
+  ],
+  "summary": {
+    "total_signals": 2,
+    "validated_count": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": null,
+    "target_hit_rate": null,
+    "stop_hit_rate": null,
+    "avg_r_multiple": null,
+    "best_signal": null,
+    "best_r_multiple": null,
+    "worst_signal": null,
+    "worst_r_multiple": null,
+    "pending_validation_count": 2
+  },
+  "pending_validation_stale_days": 90,
+  "pruned_stale_count": 0
+}
