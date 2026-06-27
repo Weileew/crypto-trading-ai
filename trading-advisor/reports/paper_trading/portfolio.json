@@ -1,0 +1,41 @@
+{
+  "starting_capital": 10000.0,
+  "cash": 9024.24,
+  "positions": {
+    "SKYAI": {
+      "symbol": "SKYAI",
+      "name": "SkyAI (skyai)",
+      "quantity": 1.0,
+      "entry_price": 0.367899,
+      "allocated": 0.37,
+      "current_price": 0.35536,
+      "stop": 0.355,
+      "target": 0.3973,
+      "pnl_usd": -0.01,
+      "pnl_pct": -2.7,
+      "status": "open",
+      "trade_id": "trade_487d33d232",
+      "opened_at": "2026-06-27T02:16:28.105294+00:00",
+      "strategy_id": "legacy",
+      "strategy_snapshot": {}
+    },
+    "syrup": {
+      "symbol": "syrup",
+      "name": "Maple Finance (syrup)",
+      "quantity": 3466.92277821,
+      "entry_price": 0.144208,
+      "allocated": 499.96,
+      "current_price": 0.144208,
+      "stop": 0.138782,
+      "target": 0.155321,
+      "pnl_usd": 0.0,
+      "pnl_pct": 0.0,
+      "status": "open",
+      "trade_id": "",
+      "opened_at": "2026-06-27T10:00:01.447420+00:00",
+      "strategy_id": "legacy",
+      "strategy_snapshot": {}
+    }
+  },
+  "last_updated": "2026-06-27T10:05:01.784321+00:00"
+}

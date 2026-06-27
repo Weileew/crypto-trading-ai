@@ -161,6 +161,16 @@ def _default_params() -> dict:
             "target_pct": 8.0,
             "max_open_positions": 3,
         },
+        "dynamic_risk": {
+            "enabled": True,
+            "base_target_pct": 8.0,
+            "base_stop_pct": 3.5,
+            "min_target_pct": 5.0,
+            "max_target_pct": 15.0,
+            "min_stop_pct": 2.0,
+            "max_stop_pct": 8.0,
+            "trailing_stages": [[2.0, 1.0], [6.0, 2.0], [12.0, 3.0]],
+        },
         "adaptation": {
             "enabled": True,
             "min_signals_before_adjust": 20,
@@ -171,6 +181,24 @@ def _default_params() -> dict:
             "loosen_multiplier": 0.85,
         },
     }
+
+
+def current_strategy_identity() -> dict:
+    """Return {strategy_id, strategy_snapshot} for the active strategy.
+
+    The ID encodes the params version + date so every signal/position
+    can be traced back to the exact strategy that generated it.
+    Reuses strategy_journal's own load_params to stay consistent.
+    """
+    params = load_params()
+    version = params.get("version", 1)
+    date = datetime.now(timezone.utc).strftime("%Y%m%d")
+    strategy_id = f"tok-v{version}-{date}"
+    snapshot = {
+        "screening": dict(params.get("screening", {})),
+        "risk": dict(params.get("risk", {})),
+    }
+    return {"strategy_id": strategy_id, "strategy_snapshot": snapshot}
 
 
 # Re-export from briefing so orchestrator doesn't import private functions cross-module

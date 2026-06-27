@@ -19,13 +19,11 @@ Guidelines for pulling free crypto data without signing up for a paid API.
   - Volume profile / volume-weighted price zones
 
 ## Liquidity / Exchange
-- TokoCrypto requires manual inspection via the TokoCrypto web UI. Record key metrics in a compact orderbook snapshot file for the advisor to read:
-  - best bid/as size
-  - best ask/as size
-  - spread in basis points
-  - depth within 1%
-  - recent trade events summary
-  Use `references/tokocrypto.md` for exact steps.
+- **Binance** — primary exchange reference for USDT pair gating (`GET /api/v3/exchangeInfo`). 437 USDT pairs as of mid-2026.
+- **TokoCrypto** — secondary liquidity source with 674 USDT pairs (Binance Cloud-based, Indonesian exchange).
+  - **Public API** (preferred — no key needed): `https://www.tokocrypto.site/api/v3/` for depth, ticker, trades, OHLCV. See `references/tokocrypto.md` for full details.
+  - **Browser/manual** (legacy): use the TokoCrypto web UI for private account checks. See `references/tokocrypto.md`.
+  - **CCXT**: `ccxt.tokocrypto()` works with the `.site` API — no credentials for market data.
 
 ## Macro / Sentiment
 - Fear & Greed Index API or direct HTML scrape daily.

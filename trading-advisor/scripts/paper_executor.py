@@ -108,7 +108,7 @@ def parse_recommendations(text: str):
             symbol = m.group(1).strip().upper()
         else:
             symbol = r.get("name", "").strip().split()[-1].upper()
-        buy.append({"symbol": symbol, "name": r.get("name"), "entry": entry, "stop": stop, "target": target})
+        buy.append({"symbol": symbol, "name": r.get("name"), "bias": r.get("bias"), "entry": entry, "stop": stop, "target": target})
     return buy
 
 
@@ -116,7 +116,13 @@ def parse_price(v) -> float | None:
     if not v:
         return None
     s = str(v).replace("%", "").strip()
-    s = re.sub(r"^(near|~|around|above|below)\s+", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^(near|~|around|above|below)\s*", "", s, flags=re.IGNORECASE).strip()
+    # Strip trailing parenthetical annotations: "(+8%)", "(stop)", etc.
+    if "(" in s:
+        s = s.split("(")[0].strip()
+    # Strip trailing space-separated annotations
+    if " " in s:
+        s = s.split(" ")[0].strip()
     try:
         return float(s)
     except ValueError:
@@ -171,6 +177,9 @@ def open_trades(date: str, recs):
             continue
 
         now_ts = _now()
+        bias = (rec.get("bias") or "bullish").lower()
+        if bias not in ("bullish", "bearish"):
+            bias = "bullish"
         trade = {
             "trade_id": f"trade_{uuid.uuid4().hex[:10]}",
             "date": date,
@@ -198,6 +207,7 @@ def open_trades(date: str, recs):
         positions[sym_key] = {
             "symbol": rec["symbol"],
             "name": rec.get("name", ""),
+            "bias": bias,
             "quantity": qty,
             "entry_price": entry,
             "current_price": entry,
@@ -207,6 +217,11 @@ def open_trades(date: str, recs):
             "pnl_pct": 0.0,
             "trade_id": trade["trade_id"],
             "opened_at": now_ts,
+            # Multi-stage trailing stop fields
+            "highest_price": round(entry, 8) if bias == "bullish" else None,
+            "lowest_price": round(entry, 8) if bias == "bearish" else None,
+            "trailing_stop": None,
+            "trailing_activated": False,
         }
         opened += 1
         detail.append({"symbol": rec["symbol"], "status": "opened", "trade_id": trade["trade_id"]})

@@ -264,7 +264,151 @@ def get_simple_technicals(prices):
     out["sma20"] = sma20
     return out
 
-# TokoCrypto liquidity: requires browser automation or manual entry via tokocrypto reference
+# ── TokoCrypto Public API (no auth) ──────────────────────────────────────────
+# Base endpoint for public market data — no API key needed.
+_TOKO_BASE = "https://www.tokocrypto.site/api/v3"
+
+def _toko_get(path, params=None, timeout=15):
+    """GET from TokoCrypto public API with minimal rate-limiting."""
+    from urllib.parse import urlencode
+    url = f"{_TOKO_BASE}{path}"
+    if params:
+        url += "?" + urlencode(params)
+    h = {"User-Agent": UA}
+    req = Request(url, headers=h)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def fetch_tokocrypto_exchange_info():
+    """Return exchange info dict (all symbols, filters, rates)."""
+    return _toko_get("/exchangeInfo")
+
+
+def fetch_tokocrypto_usdt_pairs():
+    """Return set of base asset symbols for TRADING USDT pairs on TokoCrypto."""
+    data = fetch_tokocrypto_exchange_info()
+    if not isinstance(data, dict):
+        return set()
+    pairs = set()
+    for s in data.get("symbols", []):
+        if isinstance(s, dict) and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
+            pairs.add((s.get("baseAsset") or "").upper())
+    return pairs
+
+
+def fetch_tokocrypto_tickers():
+    """Return list of 24hr tickers for ALL pairs on TokoCrypto.
+    
+    Each entry: symbol, priceChange, priceChangePercent, lastPrice, volume,
+    quoteVolume, bidPrice, bidQty, askPrice, askQty, highPrice, lowPrice, openPrice.
+    """
+    return _toko_get("/ticker/24hr")
+
+
+def fetch_tokocrypto_ticker(symbol):
+    """Return 24hr ticker for a single USDT pair (e.g. 'BTCUSDT')."""
+    return _toko_get("/ticker/24hr", {"symbol": symbol.upper()})
+
+
+def fetch_tokocrypto_book_ticker(symbol):
+    """Return best bid/ask for a single pair. Lightweight single call."""
+    return _toko_get("/ticker/bookTicker", {"symbol": symbol.upper()})
+
+
+def fetch_tokocrypto_depth(symbol, limit=20):
+    """Return orderbook depth for a pair.
+    
+    Returns dict with 'bids' and 'asks' lists of [price, qty].
+    """
+    limit = min(limit, 100)
+    return _toko_get("/depth", {"symbol": symbol.upper(), "limit": limit})
+
+
+def fetch_tokocrypto_klines(symbol, interval="1h", limit=100):
+    """Return OHLCV klines for a pair.
+    
+    Each row: [openTime, open, high, low, close, volume, closeTime, quoteVolume,
+               trades, takerBuyBaseVol, takerBuyQuoteVol, ignore]
+    """
+    limit = min(limit, 500)
+    return _toko_get("/klines", {"symbol": symbol.upper(), "interval": interval, "limit": limit})
+
+
+def compute_tokocrypto_depth_metrics(depth_data):
+    """Compute spread and depth metrics from orderbook data.
+    
+    Returns dict with: spread_bps, bid_depth, ask_depth, total_depth, bid_count, ask_count
+    or None if data is invalid.
+    """
+    if not isinstance(depth_data, dict):
+        return None
+    bids = depth_data.get("bids", [])
+    asks = depth_data.get("asks", [])
+    if not bids or not asks:
+        return None
+    try:
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+        if best_bid <= 0 or best_ask <= 0:
+            return None
+        spread_bps = round((best_ask - best_bid) / best_bid * 10000, 2)
+        # Aggregate depth within 1% of mid price
+        mid = (best_bid + best_ask) / 2
+        pct_threshold = mid * 0.01
+        bid_depth = sum(float(b[1]) * float(b[0]) for b in bids if abs(float(b[0]) - mid) <= pct_threshold)
+        ask_depth = sum(float(a[1]) * float(a[0]) for a in asks if abs(float(a[0]) - mid) <= pct_threshold)
+        return {
+            "spread_bps": spread_bps,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "bid_depth_usd": round(bid_depth, 2),
+            "ask_depth_usd": round(ask_depth, 2),
+            "total_depth_usd": round(bid_depth + ask_depth, 2),
+            "bid_count": len(bids),
+            "ask_count": len(asks),
+        }
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
+def build_tokocrypto_ticker_map(tickers):
+    """Build {SYMBOL: dict} lookup from TokoCrypto 24hr tickers list.
+    
+    Returns dict keyed by base asset (e.g. 'BTC' → {lastPrice, volume, ...}).
+    """
+    if not isinstance(tickers, list):
+        return {}
+    tmap = {}
+    for t in tickers:
+        if not isinstance(t, dict):
+            continue
+        sym = t.get("symbol", "")
+        # Only USDT pairs
+        if not sym.endswith("USDT"):
+            continue
+        base = sym[:-4].upper()
+        try:
+            tmap[base] = {
+                "tokocrypto_last": float(t.get("lastPrice", 0)),
+                "tokocrypto_volume_base": float(t.get("volume", 0)),
+                "tokocrypto_volume_quote": float(t.get("quoteVolume", 0)),
+                "tokocrypto_change_24h": float(t.get("priceChangePercent", 0)),
+                "tokocrypto_bid": float(t.get("bidPrice", 0)),
+                "tokocrypto_ask": float(t.get("askPrice", 0)),
+                "tokocrypto_high": float(t.get("highPrice", 0)),
+                "tokocrypto_low": float(t.get("lowPrice", 0)),
+                "tokocrypto_open": float(t.get("openPrice", 0)),
+            }
+        except (ValueError, TypeError):
+            continue
+    return tmap
+
+
+# Legacy TokoCrypto reference (manual browser approach)
 def tokocrypto_snapshot_instructions():
     return {
         "instructions": "Open TokoCrypto spot orderbook page and record best bid/ask, spread(bps), depth within 1%.",

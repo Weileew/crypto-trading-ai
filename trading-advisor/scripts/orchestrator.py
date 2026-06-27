@@ -50,6 +50,10 @@ def load_params() -> dict:
             "screening": {"min_mcap": 25_000_000, "min_24h_change_pct": 2.0, "score_threshold": 20.0,
                           "max_candidates": 15, "max_opportunities": 2},
             "risk": {"risk_per_trade_pct": 2.0, "stop_loss_pct": 3.5, "target_pct": 8.0},
+            "dynamic_risk": {"enabled": True, "base_target_pct": 8.0, "base_stop_pct": 3.5,
+                             "min_target_pct": 5.0, "max_target_pct": 15.0,
+                             "min_stop_pct": 2.0, "max_stop_pct": 8.0,
+                             "trailing_stages": [[2.0, 1.0], [6.0, 2.0], [12.0, 3.0]]},
         }
 
 
@@ -132,6 +136,7 @@ def phase_journal_signals(journal, candidates: list, batch_id: str, params: dict
 
     print(f"  Recording {len(candidates)} signals in journal...")
     journal.init_db()
+    si = journal.current_strategy_identity()
     for c in candidates:
         sym = c.get("symbol", "???").upper()
         name = c.get("name", sym)
@@ -148,7 +153,7 @@ def phase_journal_signals(journal, candidates: list, batch_id: str, params: dict
                 entry_price=entry, target_price=target, stop_price=stop,
                 confidence=c.get("confidence", "medium"), score=c.get("score"),
                 source="briefing", batch_id=batch_id,
-                notes=f"score={c.get('score')} | 24h={c.get('change_24h', 0):.2f}%",
+                notes=f"strategy={si['strategy_id']} | score={c.get('score')} | 24h={c.get('change_24h', 0):.2f}%",
             )
         signal_ids.append(sid)
         print(f"    Signal #{sid}: {name} ({sym}) @ ${entry:.4f}")
@@ -220,6 +225,10 @@ def phase_validate_open(journal, dry_run: bool = False) -> list[dict]:
                     outcome = "hit_target"
                 elif current_price >= stop:
                     outcome = "hit_stop"
+        # Trailing stop detection: check if current_price validates a trailing_stop close
+        # from a prior M2M update in the paper trader (already reflected in journal)
+        # This is handled by the paper_trader M2M loop; the orchestrator trusts
+        # that paper_trader --update catches trailing stops between runs.
 
         if outcome and not dry_run:
             result = journal.close_signal(
@@ -288,10 +297,40 @@ def build_digest(news: list, briefing_text: str, candidates: list,
     lines.append(f"- Score threshold: {scr.get('score_threshold', 0)}")
     lines.append(f"- Risk per trade: {risk.get('risk_per_trade_pct', 0)}%")
     lines.append(f"- Stop loss: {risk.get('stop_loss_pct', 0)}%")
+    dr = params.get("dynamic_risk", {})
+    if dr.get("enabled"):
+        lines.append(f"- Dynamic target/stop: ✅ enabled (range {dr.get('min_target_pct', 5)}%-{dr.get('max_target_pct', 15)}% / {dr.get('min_stop_pct', 2)}%-{dr.get('max_stop_pct', 8)}%)")
+        _ts = dr.get("trailing_stages", [[2, 1], [6, 2], [12, 3]])
+        _ts_str = " → ".join([f"+{s[0]:.0f}%/{s[1]:.0f}%" for s in _ts])
+        lines.append(f"- Trailing stop: {_ts_str}")
     lines.append(f"- Target: {risk.get('target_pct', 0)}%")
     if adapt_result.get("adjusted"):
         lines.append(f"- 🔄 Auto-adjusted: {'; '.join(adapt_result.get('adjustments', []))}")
     lines.append("")
+
+    # Trailing stops section (from paper trader portfolio)
+    try:
+        _pp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "reports", "paper_trading", "portfolio.json")
+        if os.path.exists(_pp):
+            with open(_pp) as _pf:
+                _port = json.load(_pf)
+            _trailed = []
+            for _sym, _pos in (_port.get("positions") or {}).items():
+                if _pos.get("trailing_activated"):
+                    _ts = _pos.get("trailing_stop")
+                    _hp = _pos.get("highest_price")
+                    _cur = _pos.get("current_price", 0)
+                    _pnl = _pos.get("pnl_pct", 0)
+                    _s = f"🔒 {_sym}: trail=${_ts} (high=${_hp}, curr=${_cur}, P&L={_pnl:+.2f}%)" if _ts else f"🔒 {_sym}: active (P&L={_pnl:+.2f}%)"
+                    _trailed.append(_s)
+            if _trailed:
+                lines.append("### Trailing Stops")
+                for _s in _trailed:
+                    lines.append(f"- {_s}")
+                lines.append("")
+    except Exception:
+        pass
 
     # News summary
     lines.append("## Market News")

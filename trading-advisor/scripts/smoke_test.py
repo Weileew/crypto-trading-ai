@@ -63,7 +63,7 @@ def probe_parsers() -> dict[str, int]:
 def probe_briefing_save() -> dict:
     """Run briefing.py --save-only and confirm it produces a file."""
     r = subprocess.run([sys.executable, str(SCRIPTS / "briefing.py"), "--save-only"],
-                       capture_output=True, text=True, cwd=str(SCRIPTS), timeout=120)
+                       capture_output=True, text=True, cwd=str(SCRIPTS), timeout=180)
     return {"rc": r.returncode, "stdout_tail": r.stdout.strip().splitlines()[-1] if r.stdout else "",
             "stderr_tail": r.stderr.strip().splitlines()[-1] if r.stderr else ""}
 

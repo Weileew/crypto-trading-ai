@@ -32,22 +32,41 @@ from free_data import (
     fetch_defillama_yields,
     fetch_defillama_stablecoins,
     fetch_stablecoin_net_flows,
+    fetch_tokocrypto_usdt_pairs,
+    fetch_tokocrypto_tickers,
+    fetch_tokocrypto_depth,
+    build_tokocrypto_ticker_map,
+    compute_tokocrypto_depth_metrics,
 )
 
 
 # CG-specific rate limiter — free tier is 10-30 req/min, play safe at 6s spacing
 _CG_MIN_INTERVAL = 6.0
 _CG_LAST_CALL = _time_module.time() - (_CG_MIN_INTERVAL - 0.5)  # stagger first call
+# Separate budget for the global endpoint — it rate-limits differently
+_CG_GLOBAL_MIN_INTERVAL = 12.0
+_CG_GLOBAL_LAST_CALL = 0.0
 
 
 def _get_cg(url, params=None):
-    """CoinGecko-specific GET with conservative rate limiting (3s min interval)."""
+    """CoinGecko-specific GET with conservative rate limiting (6s min interval)."""
     global _CG_LAST_CALL
     wait = _CG_MIN_INTERVAL - (_time_module.time() - _CG_LAST_CALL)
     if wait > 0:
         _time_module.sleep(wait)
     result = _get(url, params=params, retries=4, backoff=2.0)
     _CG_LAST_CALL = _time_module.time()
+    return result
+
+
+def _get_cg_global():
+    """Fetch CoinGecko global with a separate, more conservative rate budget."""
+    global _CG_GLOBAL_LAST_CALL
+    wait = _CG_GLOBAL_MIN_INTERVAL - (_time_module.time() - _CG_GLOBAL_LAST_CALL)
+    if wait > 0:
+        _time_module.sleep(wait)
+    result = _get("https://api.coingecko.com/api/v3/global", retries=3, backoff=3.0)
+    _CG_GLOBAL_LAST_CALL = _time_module.time()
     return result
 
 
@@ -147,19 +166,24 @@ def fetch_markets():
             seen_ids.add(cid)
             all_coins.append(coin)
 
-    # Phase 2: Binance USDT gate
-    try:
-        req = Request("https://api.binance.com/api/v3/exchangeInfo", headers={"User-Agent": UA})
-        with urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode())
-        binance_usdt = set()
-        for s in data.get("symbols", []):
-            if isinstance(s, dict) and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
-                binance_usdt.add((s.get("baseAsset") or "").upper())
-    except Exception:
-        binance_usdt = set()
+    # Phase 2: TokoCrypto USDT gate
+    tokocrypto_usdt = fetch_tokocrypto_usdt_pairs()
 
-    if not binance_usdt:
+    if not tokocrypto_usdt:
+        # Fallback to Binance if TokoCrypto API is unavailable
+        try:
+            req = Request("https://api.binance.com/api/v3/exchangeInfo", headers={"User-Agent": UA})
+            with urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+            binance_usdt = set()
+            for s in data.get("symbols", []):
+                if isinstance(s, dict) and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
+                    binance_usdt.add((s.get("baseAsset") or "").upper())
+            tokocrypto_usdt = binance_usdt
+        except Exception:
+            pass
+
+    if not tokocrypto_usdt:
         return all_coins
 
     gated = []
@@ -168,12 +192,12 @@ def fetch_markets():
         if not isinstance(item, dict):
             continue
         sym = (item.get("symbol") or "").upper()
-        if sym in binance_usdt:
+        if sym in tokocrypto_usdt:
             gated.append(item)
             coin_symbols_found.add(sym)
 
     # Phase 3: batch fallback via /simple/price (avoids N individual /coins/{id} calls)
-    missing_symbols = binance_usdt - coin_symbols_found
+    missing_symbols = tokocrypto_usdt - coin_symbols_found
     if missing_symbols:
         sym_to_id = _fetch_coingecko_coin_list()
         # Collect CoinGecko IDs for missing symbols
@@ -226,11 +250,24 @@ def fetch_markets():
         if remaining_unresolved:
             pass  # silently skip — no CoinGecko entry at all
 
+    # Phase 4: TokoCrypto ticker enrichment (merge exchange-specific data)
+    try:
+        all_tickers = fetch_tokocrypto_tickers()
+        ticker_map = build_tokocrypto_ticker_map(all_tickers)
+        if ticker_map:
+            for item in gated:
+                sym = (item.get("symbol") or "").upper()
+                tdata = ticker_map.get(sym)
+                if tdata:
+                    item.update(tdata)
+    except Exception:
+        pass  # enrichment is non-fatal — continue without TokoCrypto data
+
     return gated
 
 
 def fetch_global():
-    return _get_cg("https://api.coingecko.com/api/v3/global")
+    return _get_cg_global()
 
 
 def fetch_fear_greed():
@@ -380,14 +417,92 @@ def simple_rules(markets):
         if any(token in [sym, name] for token in ["usd", "usdc", "usdt", "dai", "tether", "stable"]):
             continue
         mcap = c.get("market_cap") or 0
-        if mcap < 25e6:
+        if mcap < 50e6:
             continue
         p = c.get("price_change_percentage_24h") or 0
-        if abs(p) < 2.0:
+        if abs(p) < 3.0:
             continue
         mc = c.get("market_cap_change_percentage_24h") or 0
-        score = abs(p) + max(0, mc) * 0.05
-        if score < 20:
+        
+        # Core score: price momentum + cap flow alignment
+        score = abs(p) + max(0, mc) * 0.08
+        
+        # TokoCrypto liquidity assessment
+        bid = c.get("tokocrypto_bid")
+        ask = c.get("tokocrypto_ask")
+        toko_vol = c.get("tokocrypto_volume_quote") or 0
+        
+        # Volume bonus (capped): higher volume on TokoCrypto = more reliable signal
+        vol_bonus = min(toko_vol / 10_000_000, 10.0)
+        score += vol_bonus
+        
+        if bid and ask and bid > 0 and ask > 0:
+            spread_bps = (ask - bid) / bid * 10000
+            if spread_bps < 5:      # tight spread — high confidence
+                score += 5.0
+            elif spread_bps > 20:   # wide spread — liquidity concern
+                score -= 10.0
+            elif spread_bps > 10:
+                score -= 5.0
+            # Bonus for meaningful daily volume on exchange
+            if toko_vol > 1_000_000:
+                score += 3.0
+            elif toko_vol > 100_000:
+                score += 1.0
+        else:
+            # No TokoCrypto ticker data — unknown liquidity, significant penalty
+            score -= 5.0
+        
+        # ── Trading Trap Filters ──────────────────────────────────────────
+        trap_flags = []
+        
+        # 1. Falling knife: steep drop with momentum against you
+        if p < -12.0:
+            trap_flags.append("falling_knife")
+            score -= 15.0
+        elif p < -8.0:
+            trap_flags.append("slipping")
+            score -= 8.0
+        
+        # 2. Pump suspicion: extreme pump on thin volume
+        cv = c.get("total_volume") or 0
+        if p > 18.0 and (toko_vol < 100_000 or cv < 2_000_000):
+            trap_flags.append("thin_pump")
+            score -= 15.0
+        elif p > 12.0 and toko_vol < 50_000:
+            trap_flags.append("low_vol_pump")
+            score -= 10.0
+        
+        # 3. Volume/price mismatch: big move but tiny volume = manipulation risk
+        if abs(p) > 15.0 and cv < 1_000_000:
+            trap_flags.append("manipulation_risk")
+            score -= 12.0
+        
+        # 4. Mcap not confirming: price moves but mcap doesn't follow
+        if abs(p) > 10.0 and abs(mc) < 2.0:
+            trap_flags.append("mcap_divergence")
+            score -= 8.0
+        
+        # 5. Over-extended: extreme move in either direction is risky
+        if abs(p) > 25.0:
+            trap_flags.append("overextended")
+            score -= 10.0
+        
+        # 6. Volume/mcap quality: big move on suspiciously thin or bloated volume
+        vol_mcap_ratio = cv / mcap if mcap > 0 else 0
+        if abs(p) > 8.0 and vol_mcap_ratio < 0.005:
+            # Price moved >8% on volume <0.5% of market cap — classic manipulation
+            trap_flags.append("fake_volume")
+            score -= 18.0
+        elif abs(p) > 5.0 and vol_mcap_ratio < 0.002:
+            trap_flags.append("fake_volume")
+            score -= 18.0
+        elif vol_mcap_ratio > 2.0:
+            # Volume >200% of market cap in 24h — wash trading or panic
+            trap_flags.append("abnormal_volume")
+            score -= 8.0
+        
+        if score < 25:
             continue
         candidates.append(
             {
@@ -399,10 +514,86 @@ def simple_rules(markets):
                 "mcap_change_24h": mc,
                 "volume": c.get("total_volume"),
                 "score": round(score, 3),
+                "trap_flags": trap_flags,
             }
         )
     candidates.sort(key=lambda x: x["score"], reverse=True)
     return candidates[:15]
+
+
+def _enrich_top_with_depth(candidates, limit=3):
+    """Fetch TokoCrypto orderbook depth for top N candidates.
+    
+    Mutates candidates in-place, adding 'tokocrypto_depth' key with spread/depth metrics.
+    Non-fatal — if depth fetch fails, candidate is unchanged.
+    """
+    if not candidates:
+        return
+    for c in candidates[:limit]:
+        sym = (c.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            depth = fetch_tokocrypto_depth(f"{sym}USDT", limit=20)
+            metrics = compute_tokocrypto_depth_metrics(depth)
+            if metrics:
+                c["tokocrypto_depth"] = metrics
+        except Exception:
+            pass
+
+
+def _format_depth_line(c):
+    """Format a single liquidity line from candidate depth data.
+    
+    Returns string like '$12.3K depth · 3.2 bps spread' or empty string.
+    """
+    d = c.get("tokocrypto_depth")
+    if not d:
+        # Fall back to ticker-level bid/ask for basic spread
+        bid = c.get("tokocrypto_bid")
+        ask = c.get("tokocrypto_ask")
+        if bid and ask and bid > 0 and ask > 0:
+            spread = round((ask - bid) / bid * 10000, 2)
+            vol = c.get("tokocrypto_volume_quote", 0)
+            vol_str = f" ${vol:,.0f} vol" if vol else ""
+            return f"TokoCrypto spread: {spread} bps{vol_str}"
+        return "Liquidity: TokoCrypto — no depth data"
+    spread = d.get("spread_bps", "?")
+    total_depth = d.get("total_depth_usd", 0)
+    if total_depth >= 1_000_000:
+        depth_str = f"${total_depth/1e6:.1f}M"
+    elif total_depth >= 1_000:
+        depth_str = f"${total_depth/1e3:.0f}K"
+    else:
+        depth_str = f"${total_depth:.0f}"
+    return f"TokoCrypto · {depth_str} depth · {spread} bps spread"
+
+
+_TRAP_LABELS = {
+    "falling_knife": "⚠️ falling knife",
+    "slipping": "⚠️ slipping",
+    "thin_pump": "⚠️ thin pump",
+    "low_vol_pump": "⚠️ low-vol pump",
+    "manipulation_risk": "⚠️ manipulation risk",
+    "mcap_divergence": "⚠️ mcap divergence",
+    "overextended": "⚠️ overextended",
+    "fake_volume": "⚠️ fake volume",
+    "abnormal_volume": "⚠️ abnormal volume",
+}
+
+
+def _format_trap_line(c):
+    """Format trap flags as a human-readable line, e.g. '⚠️ falling knife · ⚠️ low volume'.
+    Returns empty string if no traps flagged.
+    """
+    flags = c.get("trap_flags", [])
+    if not flags:
+        return ""
+    labels = []
+    for f in flags:
+        lbl = _TRAP_LABELS.get(f, f"⚠️ {f}")
+        labels.append(lbl)
+    return " · ".join(labels)
 
 
 def section(title):
@@ -482,6 +673,29 @@ def _safe_btc_dom(global_data):
     return round(dom, 2) if dom is not None else "n/a"
 
 
+def _btc_dom_from_markets(markets):
+    """Fallback: compute BTC dominance from paginated CoinGecko markets data.
+    
+    BTC mcap should be in the first page (top 250 coins). Total mcap of the
+    full list is used as denominator. Returns float or None.
+    """
+    if not isinstance(markets, list) or len(markets) < 2:
+        return None
+    btc_mcap = None
+    total_mcap = 0.0
+    for c in markets:
+        if not isinstance(c, dict):
+            continue
+        mcap = c.get("market_cap") or 0
+        total_mcap += mcap
+        sym = (c.get("symbol") or "").lower()
+        if sym == "btc":
+            btc_mcap = mcap
+    if btc_mcap and total_mcap > 0:
+        return round(btc_mcap / total_mcap * 100, 2)
+    return None
+
+
 def _safe_fng_value_classification(fng):
     if isinstance(fng, dict):
         val = fng.get("value_classification")
@@ -496,9 +710,17 @@ def _safe_price(c):
 
 
 def _usdt_pairs():
-    UA = "crypto-trading-advisor/0.1 (+https://example.com)"
+    """Return set of TRADING USDT base assets on TokoCrypto.
+    
+    Fallback: attempts Binance if TokoCrypto API is unreachable.
+    """
+    tokopairs = fetch_tokocrypto_usdt_pairs()
+    if tokopairs:
+        return tokopairs
+    # Fallback to Binance
+    UA_local = "crypto-trading-advisor/0.1 (+https://example.com)"
     try:
-        req = Request("https://api.binance.com/api/v3/exchangeInfo", headers={"User-Agent": UA})
+        req = Request("https://api.binance.com/api/v3/exchangeInfo", headers={"User-Agent": UA_local})
         with urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode())
         symbols = set()
@@ -515,11 +737,14 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
         return render_compact_briefing(markets, global_data, fng, assets, visuals=visuals, enhanced=enhanced, orchestrator=orchestrator)
     dt = now_iso()
     top = simple_rules(markets) or []
+    # Fetch TokoCrypto depth for top candidates
+    _enrich_top_with_depth(top, limit=5)
     text = []
-    text.append("# Daily Trading Briefing")
+    text.append("## Daily Trading Briefing")
     text.append(f"- generated: {dt}")
     text.append("- profile: balanced swing/day spot")
-    text.append("- sources: price/volume, sentiment, top alpha move scan, defi sector, dex activity, stablecoin flows")
+    text.append(f"- pairs gated by TokoCrypto USDT availability")
+    text.append(f"- sources: CoinGecko (prices/mcap), TokoCrypto (depth/spread), sentiment, defi sector, dex activity, stablecoin flows")
     text.append("")
     text += [
         section("Risk Disclosure"),
@@ -538,8 +763,11 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
         text.append("No high-intensity candidates found in tonight's market scan under current rules.")
     else:
         for i, c in enumerate(top, 1):
+            depth_line = _format_depth_line(c)
+            trap_line = _format_trap_line(c)
+            extra = f" | {trap_line}" if trap_line else ""
             text.append(
-                f"{i}. {c['name']} ({c['symbol']}) | price={c['price']} | 24h={round(c['change_24h'],2)}% | mcap_chg={round(c['mcap_change_24h'],2)}% | score={c['score']}"
+                f"{i}. {c['name']} ({c['symbol']}) | price={c['price']} | 24h={round(c['change_24h'],2)}% | mcap_chg={round(c['mcap_change_24h'],2)}% | score={c['score']} | {depth_line}{extra}"
             )
         text.append("")
         text.append("Use these as brainstorming targets, not trade tickets.")
@@ -547,8 +775,8 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
         "",
         section("Next Daily Briefing Checklist"),
         "- Re-run the scanner and freeze alpha candidates by 09:15 local time.",
-        "- Verify 4h/1h trend and stop alignment.",
-        "- Check TokoCrypto liquidity on tokens with large notional flow.",
+        "- Verify 4h/1h trend and stop alignment on TokoCrypto.",
+        "- Check TokoCrypto orderbook depth for opportunity coins.",
     ]
     return "\n".join(text)
 
@@ -556,9 +784,13 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
 def render_compact_briefing(markets, global_data, fng, assets, visuals=False, enhanced=False, orchestrator=False):
     dt = now_iso().split("T")[0]
     top = simple_rules(markets) or []
+    # Fetch TokoCrypto depth for top 2 candidates (the ones shown in compact briefing)
+    _enrich_top_with_depth(top, limit=2)
     sources_healthy = bool(markets)
     opps = (top or [])[:2]
     btc_dom = _safe_btc_dom(global_data)
+    if btc_dom == "n/a":
+        btc_dom = _btc_dom_from_markets(markets) or "n/a"
     fng_str = _safe_fng_value_classification(fng)
     fng_val = fng.get("value") if isinstance(fng, dict) else None
     pulse = "🟢 risk-on" if fng_val is not None and str(fng_val) not in ("n/a", "None", "") and int(fng_val) > 45 else "🔴 risk-off"
@@ -568,13 +800,14 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
     txt.append("# 📊 Daily Crypto Briefing")
     txt.append(f"- Date: {dt}")
     txt.append("- Style: balanced swing/day spot")
+    txt.append("- Exchange: TokoCrypto (pairs gated by USDT availability)")
     txt.append("")
     txt += [
         section("Risk"),
         "⚠️ Not financial advice. This is a checklist, not a green light. Preserve capital first.",
         "",
         section("Market Regime"),
-        f"- BTC dominance: {btc_dom}% {dom_bar}",
+        f"- BTC dominance: {btc_dom}% {dom_bar}" if btc_dom != "n/a" else "- BTC dominance: n/a",
         f"- Risk icon: {risk} - {fng_str}",
         f"- Market pulse: {pulse}",
         f"- Market cap shift: strongest stream above {round(top[0]['mcap_change_24h'], 1)}%" if top else "- Market cap shift: no high-intensity candidates filtered",
@@ -582,6 +815,16 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
     if not sources_healthy:
         txt.append("⚠️ CoinGecko market data unavailable — opportunities reflect stale or incomplete data. Verify BTC price manually.")
     txt.append("")
+    # Macro context banner in extreme conditions
+    if fng_val is not None:
+        try:
+            fng_int = int(fng_val)
+            if fng_int < 20:
+                txt.append("⚠️ **Macro risk**: Extreme Fear — even quality signals carry elevated macro risk. Size down, tighten stops.")
+            elif fng_int < 30:
+                txt.append("⚡ **Macro note**: Fear — conservatism warranted. Prefer high-conviction setups only.")
+        except (ValueError, TypeError):
+            pass
     txt += [
         section("Opportunities"),
     ]
@@ -592,17 +835,45 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
             terms = recommend_term(c.get("symbol"), c.get("name"))
             paper = best_paper_for(terms[0], terms[1:])
             bias = "bullish" if c.get("change_24h", 0) > 0 else "bearish"
-            invalidation = f"{round(c.get('price', 0) * 0.965, 4)}" if c.get("price") else "n/a"
-            target = f"{round(c.get('price', 0) * 1.08, 4)}" if c.get("price") else "n/a"
+            entry = c.get("price", 0)
+            if entry and entry > 0:
+                # Dynamic target/stop: scale with volatility, improve RR with score
+                vol = abs(c.get("change_24h", 3.0))
+                score = c.get("score", 25)
+                base_target = 8.0
+                base_stop = 3.5
+                # Volatility factor — more volatile = wider everything
+                vol_factor = max(0.5, vol / 3.0)
+                # Score RR boost — higher score = stretch target, tighten stop
+                score_rr = max(0.8, min(1.5, (score - 15) / 20))
+                target_pct = min(15.0, max(5.0, base_target * vol_factor * score_rr))
+                stop_tighten = max(0, (score - 25) * 0.03)
+                stop_pct = min(8.0, max(2.0, base_stop * (vol_factor ** 0.5) - stop_tighten))
+                if bias == "bearish":
+                    target_price = round(entry * (1 - target_pct / 100), 6)
+                    stop_price = round(entry * (1 + stop_pct / 100), 6)
+                    target_label = f"{target_price} (-{target_pct:.0f}%)"
+                    stop_label = f"{stop_price} (+{stop_pct:.1f}%)"
+                else:
+                    target_price = round(entry * (1 + target_pct / 100), 6)
+                    stop_price = round(entry * (1 - stop_pct / 100), 6)
+                    target_label = f"{target_price} (+{target_pct:.0f}%)"
+                    stop_label = f"{stop_price} (-{stop_pct:.1f}%)"
+            else:
+                target_label = "n/a"
+                stop_label = "n/a"
             conf = confidence_bar("medium") if visuals else ""
             txt.append(f"{idx}. {c['name']} ({c['symbol']})")
             txt.append(f"- Bias: {bias}")
-            txt.append(f"- Why: 24h={round(c.get('change_24h', 0),2)}%; momentum + cap flow aligned")
+            txt.append(f"- Why: {round(c.get('change_24h', 0),2)}% move; momentum + cap flow aligned")
             txt.append(f"- Entry: near {c.get('price')}")
-            txt.append(f"- Stop: {invalidation}")
-            txt.append(f"- Target: {target}")
+            txt.append(f"- Stop: {stop_label}")
+            txt.append(f"- Target: {target_label}")
             txt.append(f"- Confidence: medium {conf}" if conf else "- Confidence: medium")
-            txt.append(f"- Liquidity: see TokoCrypto snapshot")
+            txt.append(f"- {_format_depth_line(c)}")
+            trap_line = _format_trap_line(c)
+            if trap_line:
+                txt.append(f"- {trap_line}")
             if paper:
                 txt.append(f"- Research: {paper.get('title','paper')}")
             txt.append("")
@@ -616,8 +887,8 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
         "",
         section("Today's Action"),
         "- 1) Confirm regime at market open",
-        "- 2) Check TokoCrypto liquidity for opportunity coins",
-        "- 3) Review 1h trend and stop alignment before entry",
+        "- 2) Review TokoCrypto orderbook for opportunity coins",
+        "- 3) Verify 1h/4h trend alignment before entry",
     ]
     if enhanced:
         try:

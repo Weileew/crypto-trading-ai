@@ -1,7 +1,8 @@
-# Daily Trading Briefing
-- generated: 2026-06-27T08:11:58.358190+00:00
+## Daily Trading Briefing
+- generated: 2026-06-27T10:35:11.221905+00:00
 - profile: balanced swing/day spot
-- sources: price/volume, sentiment, top alpha move scan, defi sector, dex activity, stablecoin flows
+- pairs gated by TokoCrypto USDT availability
+- sources: CoinGecko (prices/mcap), TokoCrypto (depth/spread), sentiment, defi sector, dex activity, stablecoin flows
 
 ## Risk Disclosure
 
@@ -18,10 +19,13 @@ Used generically because macro calls are extremely sensitive to current events; 
 
 ## Alpha Candidates
 
-No high-intensity candidates found in tonight's market scan under current rules.
+1. Maple Finance (syrup) | price=0.145326 | 24h=23.43% | mcap_chg=20.47% | score=28.482 | TokoCrypto · $80K depth · 6.8 bps spread
+2. Aave (aave) | price=95.18 | 24h=12.54% | mcap_chg=12.52% | score=26.516 | TokoCrypto · $94K depth · 1.04 bps spread
+
+Use these as brainstorming targets, not trade tickets.
 
 ## Next Daily Briefing Checklist
 
 - Re-run the scanner and freeze alpha candidates by 09:15 local time.
-- Verify 4h/1h trend and stop alignment.
-- Check TokoCrypto liquidity on tokens with large notional flow.
+- Verify 4h/1h trend and stop alignment on TokoCrypto.
+- Check TokoCrypto orderbook depth for opportunity coins.

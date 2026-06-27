@@ -241,7 +241,13 @@ def parse_price(v):
     if not v:
         return None
     s = str(v).replace("%", "").strip()
-    s = re.sub(r"^(near|~|around|above|below)\s+", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^(near|~|around|above|below)\s*", "", s, flags=re.IGNORECASE).strip()
+    # Strip trailing parenthetical annotations: "(+8%)", "(stop)", etc.
+    if "(" in s:
+        s = s.split("(")[0].strip()
+    # Strip trailing space-separated annotations
+    if " " in s:
+        s = s.split(" ")[0].strip()
     try:
         return float(s)
     except ValueError:
@@ -257,12 +263,60 @@ def backtest(candles, signal_date, entry, stop, target, max_candles=14):
     future = sorted((d, r) for d, r in future if d > sig_dt.isoformat())
     if not future:
         return None
+
+    # Multi-stage trailing stop config (from params.json or defaults)
+    _trail_params_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "strategy", "params.json"
+    )
+    _trail_stages = [(2.0, 1.0), (6.0, 2.0), (12.0, 3.0)]  # (activation%, distance%)
+    try:
+        with open(_trail_params_path) as _tf:
+            _tp = json.load(_tf)
+        _dr = _tp.get("dynamic_risk", {})
+        if not _dr.get("enabled", True):
+            _trail_stages = []
+    except Exception:
+        pass
+
+    def _trail_for_profit(pct):
+        """Return (activation_threshold, trail_distance) for the given profit level."""
+        for act, dist in reversed(_trail_stages):
+            if pct >= act:
+                return act, dist
+        return _trail_stages[0] if _trail_stages else (999, 0)
+
+    highest_price = entry
+    trailing_stop_price = None
+    trailing_activated = False
+
     for i, (_, row) in enumerate(future[:max_candles]):
-        low, high = row[3], row[2]
+        low, high, close = row[3], row[2], row[4]
+
+        # Fixed stop / target checks (highest priority)
         if low <= stop:
             return {"exit_price": stop, "exit_reason": "stop", "exit_date": future[i][0], "entry_open": future[0][1][1], "holding_candles": i + 1}
         if high >= target:
             return {"exit_price": target, "exit_reason": "target", "exit_date": future[i][0], "entry_open": future[0][1][1], "holding_candles": i + 1}
+
+        # Track highest price for trailing stop
+        if high > highest_price:
+            highest_price = high
+
+        # Multi-stage trailing stop
+        profit_pct = ((close - entry) / entry) * 100
+        act, dist = _trail_for_profit(profit_pct)
+        if not trailing_activated and profit_pct >= act:
+            trailing_stop_price = highest_price * (1 - dist / 100)
+            trailing_activated = True
+        elif trailing_activated:
+            _, dist = _trail_for_profit(((highest_price - entry) / entry) * 100)
+            ts_new = highest_price * (1 - dist / 100)
+            if ts_new > trailing_stop_price:
+                trailing_stop_price = ts_new
+            if low <= trailing_stop_price:
+                return {"exit_price": trailing_stop_price, "exit_reason": "trailing_stop", "exit_date": future[i][0], "entry_open": future[0][1][1], "holding_candles": i + 1}
+
     last_date, last_row = future[-1]
     return {"exit_price": last_row[4], "exit_reason": "timeout", "exit_date": last_date, "entry_open": future[0][1][1], "holding_candles": min(len(future), max_candles)}
 
@@ -300,6 +354,7 @@ def summarize(signals):
         "win_rate": round(len(wins) / len(validated) * 100, 2) if validated else None,
         "target_hit_rate": round(sum(1 for s in validated if s.get("exit_reason") == "target") / len(validated) * 100, 2) if validated else None,
         "stop_hit_rate": round(sum(1 for s in validated if s.get("exit_reason") == "stop") / len(validated) * 100, 2) if validated else None,
+        "trailing_stop_rate": round(sum(1 for s in validated if s.get("exit_reason") == "trailing_stop") / len(validated) * 100, 2) if validated else None,
         "avg_r_multiple": round(sum(s.get("r_multiple", 0.0) for s in validated) / len(validated), 3) if validated else None,
         "best_signal": max(validated, key=lambda s: s.get("r_multiple", 0.0)).get("symbol") if validated else None,
         "best_r_multiple": round(max(s.get("r_multiple", 0.0) for s in validated), 3) if validated else None,
@@ -403,8 +458,9 @@ def _write_to_journal(signals: list[dict]):
         target = sig.get("target")
         stop = sig.get("stop")
         exit_price = sig.get("exit_price")
-        outcome = "hit_target" if sig.get("exit_reason") == "target_hit" else (
-            "hit_stop" if sig.get("exit_reason") == "stop_hit" else "expired"
+        outcome = "hit_target" if sig.get("exit_reason") in ("target", "target_hit") else (
+            "hit_stop" if sig.get("exit_reason") in ("stop", "stop_hit") else
+            "trailing_stop" if sig.get("exit_reason") == "trailing_stop" else "expired"
         )
         pnl = sig.get("pnl_pct")
         duration_h = sig.get("bars_count", 0) * 24  # approximate from daily candles

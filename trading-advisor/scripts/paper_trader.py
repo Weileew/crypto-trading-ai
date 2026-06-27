@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import time as _time_module
 from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError
@@ -25,13 +26,25 @@ def _get(url, params=None, headers=None, timeout=25):
         sep = "&" if "?" in url else "?"
         url = url + sep + urlencode(params)
     req = Request(url, headers=h)
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except HTTPError as e:
-        return {"_http_error": e.code, "_url": url}
-    except Exception as e:
-        return {"_fetch_error": str(e), "_url": url}
+    # Gentle rate limiting for CoinGecko calls
+    last_err = None
+    for attempt in range(1, 4):
+        if attempt > 1:
+            _time_module.sleep(2.0 * attempt)
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except HTTPError as e:
+            last_err = e
+            if e.code == 429:
+                _time_module.sleep(3.0 * attempt)
+                continue
+            return {"_http_error": e.code, "_url": url}
+        except Exception as e:
+            last_err = e
+            _time_module.sleep(2.0)
+            continue
+    return {"_fetch_error": str(last_err), "_url": url}
 
 
 def _utc_now():
@@ -42,9 +55,65 @@ def _utc_today():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _safe_price(price):
+def _current_strategy_identity():
+    """Return {strategy_id, strategy_snapshot} from params.json.
+
+    Generates a deterministic strategy ID from the params version + current date.
+    Ensures every position knows which strategy version created it.
+    Falls back to 'legacy' if params.json is missing.
+    """
+    params_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "strategy", "params.json"
+    )
     try:
-        return float(price)
+        with open(params_path) as f:
+            params = json.load(f)
+        version = params.get("version", 1)
+        date = datetime.now(timezone.utc).strftime("%Y%m%d")
+        strategy_id = f"tok-v{version}-{date}"
+        snapshot = {
+            "screening": dict(params.get("screening", {})),
+            "risk": dict(params.get("risk", {})),
+        }
+    except Exception:
+        strategy_id = "legacy"
+        snapshot = {}
+    return {"strategy_id": strategy_id, "strategy_snapshot": snapshot}
+
+
+def _safe_price(price):
+    """Safely convert a string to float, stripping common formatting artifacts.
+
+    Handles:
+      - Prefixes: "near 0.355", "~0.355", "around 0.355"
+      - Suffixes: "0.3973 (+8%)", "0.355 (stop)", "0.3973 (+8"
+      - Plain numbers: "0.355"
+    """
+    if price is None:
+        return None
+    s = str(price).strip()
+    # Strip leading prefixes FIRST: "near", "~", "around", "above", "below"
+    s = re.sub(r"^(near|~|around|above|below)\s*", "", s, flags=re.IGNORECASE).strip()
+    # Strip trailing parenthetical annotations: "(+8%)", "(stop)", etc.
+    if "(" in s:
+        s = s.split("(")[0].strip()
+    # Strip trailing space-separated annotations last
+    if " " in s:
+        s = s.split(" ")[0].strip()
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(val):
+    """Safely convert a value to float, returning None on failure."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f
     except (TypeError, ValueError):
         return None
 
@@ -136,12 +205,17 @@ def current_price_map(symbols):
     """
     if not symbols:
         return {}
+    # Build list of CG IDs, keeping track of original → CG ID mapping
+    orig_to_cgid = {}
     cg_ids = []
+    cg_ids_set = set()
     for s in symbols:
         label = (s or "").strip().lower()
         cg_id = _SYM_TO_CG.get(label, label)
-        if cg_id:
+        if cg_id and cg_id not in cg_ids_set:
+            cg_ids_set.add(cg_id)
             cg_ids.append(cg_id)
+            orig_to_cgid[s] = cg_id
     if not cg_ids:
         return {}
     data = _get(
@@ -151,13 +225,16 @@ def current_price_map(symbols):
     )
     if not isinstance(data, dict):
         return {}
+    # Reverse map: cg_id → original symbol (uppercase)
+    cgid_to_orig = {v: k for k, v in orig_to_cgid.items()}
     out = {}
     for cg_id, payload in data.items():
         if not isinstance(payload, dict):
             continue
         p = payload.get("usd")
         if isinstance(p, (int, float)) and p > 0:
-            out[cg_id] = float(p)
+            orig_key = cgid_to_orig.get(cg_id, cg_id)
+            out[orig_key] = float(p)
     return out
 
 
@@ -201,7 +278,7 @@ def recommended_symbols(recs):
     return out
 
 
-def open_position(portfolio, rec, executed_price):
+def open_position(portfolio, rec, executed_price, strategy_id=None, strategy_snapshot=None):
     symbol = recommended_symbols([rec])[0]
     if not symbol:
         return None
@@ -214,9 +291,14 @@ def open_position(portfolio, rec, executed_price):
     quantity = allocation / float(executed_price)
     if quantity <= 0:
         return None
+    # Determine bias from the rec
+    bias = (rec.get("bias") or "").lower()
+    if bias not in ("bullish", "bearish"):
+        bias = "bullish"  # default for legacy
     position = {
         "symbol": symbol,
         "name": rec.get("name"),
+        "bias": bias,
         "entry_price": round(float(executed_price), 8),
         "quantity": round(quantity, 8),
         "allocated": round(allocation, 2),
@@ -227,6 +309,13 @@ def open_position(portfolio, rec, executed_price):
         "current_price": round(float(executed_price), 8),
         "pnl_usd": 0.0,
         "pnl_pct": 0.0,
+        "strategy_id": strategy_id or "legacy",
+        "strategy_snapshot": strategy_snapshot or {},
+        # Multi-stage trailing stop fields
+        "highest_price": round(float(executed_price), 8) if bias == "bullish" else None,
+        "lowest_price": round(float(executed_price), 8) if bias == "bearish" else None,
+        "trailing_stop": None,
+        "trailing_activated": False,
     }
     portfolio["cash"] = round(portfolio["cash"] - position["allocated"], 2)
     portfolio["positions"][symbol] = position
@@ -247,6 +336,7 @@ def close_position(portfolio, symbol, close_price, reason="manual"):
     closed = {
         "symbol": symbol,
         "name": pos.get("name"),
+        "bias": pos.get("bias", "bullish"),
         "entry_price": pos.get("entry_price"),
         "exit_price": price,
         "quantity": pos["quantity"],
@@ -262,19 +352,108 @@ def close_position(portfolio, symbol, close_price, reason="manual"):
 
 
 def update_mark_to_market(portfolio):
+    """Update positions to current prices. Closes positions that hit stop/target/trail.
+    
+    Returns a list of closed position dicts for journal syncing.
+    """
     symbols = list((portfolio.get("positions") or {}).keys())
     prices = current_price_map(symbols)
+    closed_positions = []
     for sym, pos in list((portfolio.get("positions") or {}).items()):
         price = prices.get(sym)
         if price is None:
             continue
-        pos["current_price"] = round(price, 8)
-        pos["pnl_usd"] = round(pos["quantity"] * pos["current_price"] - pos["allocated"], 2)
-        pos["pnl_pct"] = round((pos["pnl_usd"] / pos["allocated"]) * 100, 2) if pos["allocated"] else 0.0
-        if pos.get("stop") and price <= float(pos["stop"]):
-            close_position(portfolio, sym, price, reason="stop-loss")
-        elif pos.get("target") and price >= float(pos["target"]):
-            close_position(portfolio, sym, price, reason="target-hit")
+        try:
+            pos["current_price"] = round(price, 8)
+            pos["pnl_usd"] = round(pos["quantity"] * pos["current_price"] - pos["allocated"], 2)
+            pos["pnl_pct"] = round((pos["pnl_usd"] / pos["allocated"]) * 100, 2) if pos["allocated"] else 0.0
+            # Fixed stop-loss / take-profit check
+            stop_val = _safe_float(pos.get("stop"))
+            target_val = _safe_float(pos.get("target"))
+            if stop_val is not None and price <= stop_val:
+                _closed = close_position(portfolio, sym, price, reason="stop-loss")
+                if _closed:
+                    closed_positions.append(_closed)
+                continue
+            elif target_val is not None and price >= target_val:
+                _closed = close_position(portfolio, sym, price, reason="target-hit")
+                if _closed:
+                    closed_positions.append(_closed)
+                continue
+            # --- Multi-stage trailing stop ---
+            bias = (pos.get("bias") or "bullish").lower()
+            entry = _safe_float(pos.get("entry_price")) or 0
+
+            # Load trailing stages from params.json (once per M2M tick)
+            _trail_stages = [(2.0, 1.0), (6.0, 2.0), (12.0, 3.0)]
+            try:
+                _tp = json.loads(open(os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "strategy", "params.json"
+                )).read())
+                _custom = _tp.get("dynamic_risk", {}).get("trailing_stages")
+                if _custom and isinstance(_custom, list) and len(_custom) > 0:
+                    _trail_stages = [(float(a), float(d)) for a, d in _custom]
+            except Exception:
+                pass
+
+            def _trail_params(profit_pct):
+                """Return (activation_threshold, trail_distance) for given profit level.
+                Reads stages from params.json dynamic_risk.trailing_stages.
+                Default: [[2,1], [6,2], [12,3]] — profit 2% → trail 1%, 6% → 2%, 12% → 3%.
+                """
+                act, dist = _trail_stages[0][0], _trail_stages[0][1]
+                for a, d in _trail_stages:
+                    if profit_pct >= a:
+                        act, dist = a, d
+                return act, dist
+
+            if bias == "bullish" and entry > 0:
+                highest = _safe_float(pos.get("highest_price")) or entry
+                if price > highest:
+                    pos["highest_price"] = round(price, 8)
+                    highest = price
+                profit_pct = ((price - entry) / entry) * 100
+                act, dist = _trail_params(profit_pct)
+                activated = pos.get("trailing_activated", False)
+                if not activated and profit_pct >= act:
+                    pos["trailing_stop"] = round(highest * (1 - dist / 100), 8)
+                    pos["trailing_activated"] = True
+                    activated = True
+                elif activated:
+                    _, dist = _trail_params(((pos.get("highest_price") or entry) - entry) / entry * 100)
+                    if price > highest:
+                        pos["trailing_stop"] = round(highest * (1 - dist / 100), 8)
+                    trail_stop = _safe_float(pos.get("trailing_stop"))
+                    if trail_stop is not None and price <= trail_stop:
+                        _closed = close_position(portfolio, sym, price, reason="trailing_stop")
+                        if _closed:
+                            closed_positions.append(_closed)
+                        continue
+            elif bias == "bearish" and entry > 0:
+                lowest = _safe_float(pos.get("lowest_price")) or entry
+                if price < lowest:
+                    pos["lowest_price"] = round(price, 8)
+                    lowest = price
+                profit_pct = ((entry - price) / entry) * 100
+                act, dist = _trail_params(profit_pct)
+                activated = pos.get("trailing_activated", False)
+                if not activated and profit_pct >= act:
+                    pos["trailing_stop"] = round(lowest * (1 + dist / 100), 8)
+                    pos["trailing_activated"] = True
+                elif activated:
+                    _, dist = _trail_params(((entry - (pos.get("lowest_price") or entry)) / entry) * 100)
+                    if price < lowest:
+                        pos["trailing_stop"] = round(lowest * (1 + dist / 100), 8)
+                    trail_stop = _safe_float(pos.get("trailing_stop"))
+                    if trail_stop is not None and price >= trail_stop:
+                        _closed = close_position(portfolio, sym, price, reason="trailing_stop")
+                        if _closed:
+                            closed_positions.append(_closed)
+                        continue
+        except Exception:
+            continue  # skip malformed position rather than crashing the whole update
+    return closed_positions
 
 
 def _normalize_position(pos):
@@ -310,6 +489,14 @@ def _normalize_position(pos):
         "status": pos.get("status") or "open",
         "trade_id": pos.get("trade_id") or pos.get("Trade ID") or "",
         "opened_at": pos.get("opened_at") or pos.get("Opened At") or "",
+        "strategy_id": pos.get("strategy_id") or "legacy",
+        "strategy_snapshot": pos.get("strategy_snapshot") or {},
+        # Trailing stop fields — preserve if set, default to None/False for legacy
+        "bias": pos.get("bias") or "bullish",
+        "highest_price": pos.get("highest_price"),
+        "lowest_price": pos.get("lowest_price"),
+        "trailing_stop": pos.get("trailing_stop"),
+        "trailing_activated": pos.get("trailing_activated", False),
     }
     if not out["allocated"] and out["entry_price"] and out["quantity"]:
         out["allocated"] = round(out["quantity"] * out["entry_price"], 2)
@@ -358,6 +545,7 @@ def _normalize_legacy_positions_and_trades(portfolio, ledger):
 def open_today(portfolio, text):
     recs = parse_briefing_recommendations(text)
     prices = current_price_map(recommended_symbols(recs))
+    si = _current_strategy_identity()
     executed = []
     for rec in recs:
         syms = recommended_symbols([rec])
@@ -365,7 +553,9 @@ def open_today(portfolio, text):
         price = prices.get(sym)
         if not sym or price is None:
             continue
-        pos = open_position(portfolio, rec, price)
+        pos = open_position(portfolio, rec, price,
+                            strategy_id=si["strategy_id"],
+                            strategy_snapshot=si["strategy_snapshot"])
         if pos:
             executed.append(pos)
     return executed
@@ -401,6 +591,14 @@ def summary(portfolio):
 
 def format_summary(portfolio, ledger):
     s = summary(portfolio)
+    positions = list((portfolio.get("positions") or {}).values())
+
+    # Group positions by strategy_id for per-strategy P&L
+    by_strategy = {}
+    for pos in positions:
+        sid = pos.get("strategy_id", "legacy")
+        by_strategy.setdefault(sid, []).append(pos)
+
     lines = [
         "# Paper Trading",
         "",
@@ -408,17 +606,34 @@ def format_summary(portfolio, ledger):
         "| --- | --- |",
         f"| Starting capital | {s['starting_capital']} |",
         f"| Cash | {s['cash']} |",
-        f"| Open positions | {s['open_positions']} |",
         f"| Equity | {s['equity']} |",
         f"| Return | {s['return_pct']}% |",
-        f"| Unrealised P&L | {s['unrealised_pnl_usd']} |",
         "",
-        "| Symbol | Name | Entry | Current | P&L | P&L % |",
+        "| Strategy | Positions | P&L |",
+        "| --- | --- | --- |",
+    ]
+    for sid, plist in sorted(by_strategy.items()):
+        pnl = sum(p.get("pnl_usd") or 0.0 for p in plist)
+        lines.append(f"| {sid} | {len(plist)} | ${pnl:+.2f} |")
+
+    lines += [
+        "",
+        "| Symbol | Strategy | Entry | Current | P&L % | Trail |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for pos in (portfolio.get("positions") or {}).values():
+    for pos in positions:
+        sid = pos.get("strategy_id", "legacy")
+        # Trailing stop status
+        ts_active = pos.get("trailing_activated", False)
+        ts_price = pos.get("trailing_stop")
+        if ts_active and ts_price:
+            trail_status = f"🔒 ${ts_price}"
+        elif ts_active:
+            trail_status = "🔒 active"
+        else:
+            trail_status = ""
         lines.append(
-            f"| {pos.get('symbol')} | {pos.get('name')} | {pos.get('entry_price')} | {pos.get('current_price')} | {pos.get('pnl_usd')} | {pos.get('pnl_pct')}% |"
+            f"| {pos.get('symbol','')} | {sid} | {pos.get('entry_price','')} | {pos.get('current_price','')} | {pos.get('pnl_pct','')}% | {trail_status} |"
         )
     closed = [t for t in (ledger.get("trades") or []) if t.get("status") in ("closed", "exit") or t.get("closed_at")]
     recent_closed = closed[-10:]
@@ -442,6 +657,81 @@ def save_summary(portfolio, ledger):
     return path
 
 
+def _sync_closed_to_journal(closed_positions):
+    """Record closed positions in the strategy journal.
+    
+    For each closed position, tries to match an open signal in the journal
+    by symbol + entry price (±5%). If matched, closes it. Otherwise records
+    a standalone outcome.
+    """
+    if not closed_positions:
+        return 0
+    try:
+        import importlib.util as _iu
+        _jp = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "strategy_journal.py"
+        )
+        if not os.path.exists(_jp):
+            return 0
+        _spec = _iu.spec_from_file_location("_sj", _jp)
+        _mod = _iu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.init_db()
+    except Exception:
+        return 0
+    
+    synced = 0
+    for cp in closed_positions:
+        sym = (cp.get("symbol") or "").upper()
+        entry = _safe_float(cp.get("entry_price")) or 0
+        exit_price = _safe_float(cp.get("exit_price")) or 0
+        pnl = _safe_float(cp.get("pnl_pct")) or 0
+        reason = cp.get("reason", "manual")
+        bias = cp.get("bias", "bullish")
+        
+        # Map reason to journal outcome
+        outcome_map = {
+            "stop-loss": "hit_stop",
+            "target-hit": "hit_target",
+            "trailing_stop": "trailing_stop",
+            "manual": "manual_close",
+        }
+        outcome = outcome_map.get(reason, "expired")
+        
+        # Try to match an open signal in the journal
+        try:
+            open_signals = _mod.get_open_signals()
+            matched = [s for s in open_signals 
+                       if s["symbol"] == sym 
+                       and abs((s.get("entry_price") or 0) - entry) / max(entry, 1) < 0.05]
+            if matched:
+                _mod.close_signal(
+                    signal_id=matched[0]["id"],
+                    outcome=outcome,
+                    exit_price=exit_price,
+                    regime="paper_trader_m2m",
+                    reason=reason,
+                )
+            else:
+                # Record standalone
+                sid = _mod.record_signal(
+                    symbol=sym, name=cp.get("name", sym), bias=bias,
+                    entry_price=entry, target_price=None, stop_price=None,
+                    confidence="medium", score=None,
+                    source="paper_trader", batch_id=f"m2m_{_utc_today()}",
+                    notes=f"Auto-closed via {reason}: PnL={pnl}%",
+                )
+                _mod.close_signal(
+                    signal_id=sid, outcome=outcome, exit_price=exit_price,
+                    regime="paper_trader_m2m", reason=reason,
+                )
+            synced += 1
+        except Exception:
+            continue
+    return synced
+
+
 def main():
     import argparse
 
@@ -462,7 +752,10 @@ def main():
             briefing_text = f.read()
 
     if args.update:
-        update_mark_to_market(portfolio)
+        closed = update_mark_to_market(portfolio)
+        synced = _sync_closed_to_journal(closed)
+        if synced:
+            print(f"  Journal: synced {synced} closed position(s)")
 
     if args.paper_open:
         executed = open_today(portfolio, briefing_text)
@@ -490,9 +783,12 @@ def main():
         return
 
     # Default: update + summary
-    update_mark_to_market(portfolio)
+    closed = update_mark_to_market(portfolio)
+    synced = _sync_closed_to_journal(closed)
     save_portfolio(portfolio)
     save_ledger(ledger)
+    if synced:
+        print(f"  Journal: synced {synced} closed position(s)")
     print(format_summary(portfolio, ledger))
 
 
