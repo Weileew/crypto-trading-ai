@@ -1529,7 +1529,7 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
             text.append(f"{i}. {c['name']} ({c['symbol']})")
             text.append(f"- Bias: {bias}")
             text.append(f"- Why: {thesis}")
-            text.append(f"- Entry: near {entry}")
+            text.append(f"- Entry: near {entry:.6f}")
             text.append(f"- Stop: {stop_label}")
             text.append(f"- Target: {target_label}")
             text.append(f"- {depth_line}")
@@ -1806,6 +1806,29 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
                 _pfolio_ts = datetime.fromtimestamp(os.path.getmtime(_pfolio_path)).strftime("%H:%M")
                 _positions = _pfolio.get("positions", {})
                 if _positions:
+                    # ── Refresh position prices from live TokoCrypto ticker data ──
+                    # TokoCrypto prices are fresher than CoinGecko (fetched moments ago in fetch_markets)
+                    _toko_price_map = {}
+                    for _m in (markets or []):
+                        _sym = (_m.get("symbol") or "").upper()
+                        _toko_price = _m.get("tokocrypto_last")
+                        if _sym and _toko_price and _toko_price > 0:
+                            _toko_price_map[_sym] = float(_toko_price)
+                    _refreshed = 0
+                    for _sym, _pos in _positions.items():
+                        _fresh_price = _toko_price_map.get(_sym.upper())
+                        if _fresh_price:
+                            _old_price = _pos.get("current_price", 0)
+                            if abs(_fresh_price - _old_price) / max(_old_price, 0.0001) > 0.001:  # >0.1% change
+                                _refreshed += 1
+                            _pos["current_price"] = round(_fresh_price, 8)
+                            _pos["pnl_usd"] = round(_pos["quantity"] * _pos["current_price"] - _pos["allocated"], 2)
+                            _pos["pnl_pct"] = round((_pos["pnl_usd"] / _pos["allocated"]) * 100, 2) if _pos["allocated"] else 0.0
+                    if _refreshed:
+                        # Persist refreshed prices so m2m and next briefing pick them up
+                        with open(_pfolio_path, "w", encoding="utf-8") as _pf:
+                            json.dump(_pfolio, _pf, indent=2)
+                        _pfolio_ts = datetime.fromtimestamp(os.path.getmtime(_pfolio_path)).strftime("%H:%M")
                     _cash = _pfolio.get("cash", 0)
                     _starting = _pfolio.get("starting_capital", 10000)
                     _equity = _cash + sum(
@@ -1932,7 +1955,8 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
             else:
                 thesis = f"{round(c.get('change_24h', 0),2)}% move; momentum + cap flow aligned"
             txt.append(f"- Why: {thesis}")
-            txt.append(f"- Entry: near {c.get('price')}")
+            _entry_price = c.get('price', 0) or 0
+            txt.append(f"- Entry: near {_entry_price:.6f}")
             txt.append(f"- Stop: {stop_label}")
             txt.append(f"- Target: {target_label}")
             # Score bar (price/volume-derived — a market structure score, not fundamental sentiment)
