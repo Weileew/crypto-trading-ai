@@ -1815,11 +1815,14 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
                         if _sym and _toko_price and _toko_price > 0:
                             _toko_price_map[_sym] = float(_toko_price)
                     _refreshed = 0
+                    _stale_cleared = 0
                     _toko_refreshed = set()  # symbols that got live TokoCrypto data
                     for _sym, _pos in _positions.items():
                         _fresh_price = _toko_price_map.get(_sym.upper())
                         if _fresh_price:
                             _toko_refreshed.add(_sym.upper())
+                            if _pos.pop("_toko_stale", None) is not None:
+                                _stale_cleared += 1
                             _old_price = _pos.get("current_price", 0)
                             if abs(_fresh_price - _old_price) / max(_old_price, 0.0001) > 0.001:  # >0.1% change
                                 _refreshed += 1
@@ -1832,7 +1835,7 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
                     _all_stale = not _toko_refreshed and bool(_positions)  # true if market feed was entirely missing
                     if _all_stale:
                         txt.append("⚠️ Position prices not refreshed — TokoCrypto market data unavailable. Values may be stale.")
-                    if _refreshed:
+                    if _refreshed or _stale_cleared:
                         # Persist refreshed prices so m2m and next briefing pick them up
                         with open(_pfolio_path, "w", encoding="utf-8") as _pf:
                             json.dump(_pfolio, _pf, indent=2)
