@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import uuid
 import time as _time_module
 from datetime import datetime, timezone
 from urllib.request import urlopen, Request
@@ -13,38 +14,14 @@ REPORTS_DIR = os.path.join(SKILL_DIR, "reports")
 PAPER_DIR = os.path.join(REPORTS_DIR, "paper_trading")
 os.makedirs(PAPER_DIR, exist_ok=True)
 
-UA = "crypto-trading-advisor/0.1 (+https://example.com)"
-
-
-def _get(url, params=None, headers=None, timeout=25):
-    h = {"User-Agent": UA}
-    if headers:
-        h.update(headers)
-    if params:
-        from urllib.parse import urlencode
-
-        sep = "&" if "?" in url else "?"
-        url = url + sep + urlencode(params)
-    req = Request(url, headers=h)
-    # Gentle rate limiting for CoinGecko calls
-    last_err = None
-    for attempt in range(1, 4):
-        if attempt > 1:
-            _time_module.sleep(2.0 * attempt)
-        try:
-            with urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode())
-        except HTTPError as e:
-            last_err = e
-            if e.code == 429:
-                _time_module.sleep(3.0 * attempt)
-                continue
-            return {"_http_error": e.code, "_url": url}
-        except Exception as e:
-            last_err = e
-            _time_module.sleep(2.0)
-            continue
-    return {"_fetch_error": str(last_err), "_url": url}
+# CoinGecko calls use the shared rate-limited getter from free_data
+import importlib.util as _pt_ilu
+_pt_fd_path = os.path.join(SKILL_DIR, "scripts", "free_data.py")
+_pt_spec = _pt_ilu.spec_from_file_location("free_data_pt", _pt_fd_path)
+_pt_mod = _pt_ilu.module_from_spec(_pt_spec)
+_pt_spec.loader.exec_module(_pt_mod)
+_get_cg = _pt_mod._get_cg
+resolve_coin_id = _pt_mod.resolve_coin_id
 
 
 def _utc_now():
@@ -167,41 +144,12 @@ def save_ledger(ledger):
     return path
 
 
-# Symbol → CoinGecko ID mapping (kept in-sync with signal_validator.py)
-_SYM_TO_CG = {
-    "btc": "bitcoin", "eth": "ethereum", "bnb": "binancecoin", "sol": "solana",
-    "xrp": "ripple", "ada": "cardano", "avax": "avalanche-2", "doge": "dogecoin",
-    "dot": "polkadot", "matic": "matic-network", "link": "chainlink", "uni": "uniswap",
-    "ltc": "litecoin", "atom": "cosmos", "apt": "aptos", "arb": "arbitrum",
-    "op": "optimism", "near": "near", "ftm": "fantom", "icp": "internet-computer",
-    "aave": "aave", "comp": "compound-governance-token", "mkr": "maker", "snx": "havven",
-    "crv": "curve-dao-token", "1inch": "1inch", "enj": "enjincoin", "mana": "decentraland",
-    "sand": "the-sandbox", "gala": "gala", "axs": "axie-infinity", "imx": "immutable-x",
-    "ldo": "lido-dao", "rpl": "rocket-pool", "sui": "sui", "sei": "sei-network",
-    "tia": "celestia", "bonk": "bonk", "wif": "dogwifcoin", "pepe": "pepe",
-    "shib": "shiba-inu", "floki": "floki", "render": "render-token", "rndr": "render-token",
-    "celo": "celo", "osmosis": "osmosis", "inj": "injective-protocol", "ckb": "nervos-network",
-    "ronin": "ronin", "magma": "magma-finance", "velvet": "velvet", "skyai": "skyai",
-    "usdt": "tether", "usdc": "usd-coin", "cro": "crypto-com-chain", "hbar": "hedera-hashgraph",
-    "vet": "vechain", "theta": "theta-token", "fil": "filecoin", "egld": "elrond-erd-2",
-    "algo": "algorand", "nano": "nano", "xlm": "stellar", "trx": "tron",
-    "fxs": "frax-share", "cvx": "convex-finance", "yfi": "yearn-finance",
-    "cake": "pancakeswap-token", "dydx": "dydx", "gmt": "stepn", "stx": "blockstack",
-    "mina": "mina-protocol", "zil": "zilliqa", "waves": "waves", "kava": "kava",
-    "anr": "anr-key", "jup": "jupiter-exchange-solana", "pyth": "pyth-network",
-    "ondo": "ondo-finance", "ena": "ethena", "ethfi": "ether-fi",
-    "pendle": "pendle", "alt": "altlayer", "strk": "starknet",
-    "wld": "worldcoin-org", "manta": "manta-network", "dym": "dymension",
-    "saga": "saga-2", "not": "notcoin", "io": "io-net",
-}
-
-
 def current_price_map(symbols):
     """Return a {symbol: price} map from CoinGecko for the requested symbols.
 
     Portfolio keys are uppercase symbols (e.g. 'VELVET', 'MAGMA').
     The function lowercases them and maps to CoinGecko internal IDs
-    via _SYM_TO_CG before querying.
+    via resolve_coin_id before querying.
     """
     if not symbols:
         return {}
@@ -211,16 +159,16 @@ def current_price_map(symbols):
     cg_ids_set = set()
     for s in symbols:
         label = (s or "").strip().lower()
-        cg_id = _SYM_TO_CG.get(label, label)
+        cg_id = resolve_coin_id(label)
         if cg_id and cg_id not in cg_ids_set:
             cg_ids_set.add(cg_id)
             cg_ids.append(cg_id)
             orig_to_cgid[s] = cg_id
     if not cg_ids:
         return {}
-    data = _get(
+    data = _get_cg(
         "https://api.coingecko.com/api/v3/simple/price",
-        {"ids": ",".join(cg_ids), "vs_currencies": "usd"},
+        params={"ids": ",".join(cg_ids), "vs_currencies": "usd"},
         timeout=20,
     )
     if not isinstance(data, dict):
@@ -239,7 +187,12 @@ def current_price_map(symbols):
 
 
 def parse_briefing_recommendations(text):
-    """Extract buy bias recommendations from briefing markdown text."""
+    """Extract buy bias recommendations from briefing markdown text.
+    
+    Handles both formats:
+    1. Compact briefing: structured bullet fields (- Bias:, - Entry:, - Stop:, - Target:)
+    2. Full briefing: single-line Alpha Candidates with pipe-separated fields
+    """
     recs, current = [], {}
     lines = text.splitlines()
     for line in lines:
@@ -249,23 +202,78 @@ def parse_briefing_recommendations(text):
                 recs.append(current)
                 current = {}
             continue
+        
+        # Compact format: structured bullet fields
         if s.startswith("- Bias"):
             current["bias"] = s.split(":", 1)[-1].strip().lower()
+            continue
         elif s.startswith("- Entry"):
             current["entry"] = s.split(":", 1)[-1].strip()
+            continue
         elif s.startswith("- Stop"):
             current["stop"] = s.split(":", 1)[-1].strip()
+            continue
         elif s.startswith("- Target"):
             current["target"] = s.split(":", 1)[-1].strip()
+            continue
         elif s.startswith("- Research"):
             current["research"] = s.split(":", 1)[-1].strip()
-        elif re.match(r"^\d+\.\s+\S", s) and not s.startswith("http"):
+            continue
+        
+        # Full briefing format: "1. Name (sym) | price=X | 24h=Y% | mcap_chg=Z% | score=... | ..."
+        if re.match(r"^\d+\.\s+\S", s) and "|" in s and "price=" in s:
+            if current:
+                recs.append(current)
+            # Parse the full briefing line
+            parts = [p.strip() for p in s.split("|")]
+            # First part: "1. Name (sym)"
+            header = parts[0]
+            name_match = re.match(r"^\d+\.\s+(.+?)\s*\((\w+)\)", header)
+            if name_match:
+                current = {"name": name_match.group(1).strip(), "symbol": name_match.group(2).strip()}
+            else:
+                # Fallback: just take everything after the number
+                current = {"name": header.split(".", 1)[-1].strip()}
+            # Parse pipe-separated fields
+            for part in parts[1:]:
+                if part.startswith("price="):
+                    current["entry"] = part.replace("price=", "").strip()
+                elif part.startswith("24h="):
+                    current["change_24h"] = part.replace("24h=", "").strip()
+                elif part.startswith("mcap_chg="):
+                    current["mcap_chg"] = part.replace("mcap_chg=", "").strip()
+                elif part.startswith("score="):
+                    current["score"] = part.replace("score=", "").strip()
+            # Full briefing doesn't have explicit bias/stop/target - use defaults
+            # The bias can be inferred from the context or we set default
+            current["bias"] = "bullish"  # Default for Alpha Candidates
+            current["stop"] = "?"
+            current["target"] = "?"
+            continue
+        
+        # Compact format: numbered item without pipe separators (section header)
+        if re.match(r"^\d+\.\s+\S", s) and not s.startswith("http"):
             if current:
                 recs.append(current)
             current = {"name": s.split(".", 1)[-1].strip()}
+            continue
+    
     if current:
         recs.append(current)
-    return [r for r in recs if r.get("bias", "").lower() in {"buy bias", "buy", "bullish", "long", "accumulate"}]
+    
+    # Filter and normalise compound biases like "mean-reversion - bullish" -> "bullish"
+    buy = []
+    for r in recs:
+        bias = (r.get("bias") or "").lower()
+        if "bullish" in bias:
+            bias = "bullish"
+        elif "bearish" in bias:
+            bias = "bearish"
+        if bias not in {"buy bias", "buy", "bullish", "long", "accumulate"}:
+            continue
+        r["bias"] = bias
+        buy.append(r)
+    return buy
 
 def recommended_symbols(recs):
     """Best-effort symbol extraction from recommendation names."""
@@ -284,6 +292,9 @@ def open_position(portfolio, rec, executed_price, strategy_id=None, strategy_sna
         return None
     if float(executed_price) <= 0:
         return None
+    # Prevent overwriting an existing open position for the same symbol (case-insensitive)
+    if any(existing_sym.upper() == symbol.upper() for existing_sym in (portfolio.get("positions") or {})):
+        return None
     allocation = min(
         portfolio["cash"],
         max(portfolio["cash"] * 0.05, 10.0),
@@ -299,6 +310,7 @@ def open_position(portfolio, rec, executed_price, strategy_id=None, strategy_sna
         "symbol": symbol,
         "name": rec.get("name"),
         "bias": bias,
+        "trade_id": f"trade_{uuid.uuid4().hex[:10]}",
         "entry_price": round(float(executed_price), 8),
         "quantity": round(quantity, 8),
         "allocated": round(allocation, 2),
@@ -334,6 +346,7 @@ def close_position(portfolio, symbol, close_price, reason="manual"):
     pnl = round(proceeds - pos["allocated"], 2)
     pct = round((pnl / pos["allocated"]) * 100, 2) if pos["allocated"] else 0.0
     closed = {
+        "trade_id": pos.get("trade_id"),
         "symbol": symbol,
         "name": pos.get("name"),
         "bias": pos.get("bias", "bullish"),
@@ -750,6 +763,11 @@ def _sync_closed_to_journal(closed_positions):
                     reason=reason,
                 )
             else:
+                # Guard: skip if a signal for this symbol+entry already exists
+                # (prevents phantom duplicates from portfolio-reload bugs)
+                if _mod.signal_exists(sym, entry):
+                    synced += 1
+                    continue
                 # Record standalone
                 sid = _mod.record_signal(
                     symbol=sym, name=cp.get("name", sym), bias=bias,
@@ -766,6 +784,25 @@ def _sync_closed_to_journal(closed_positions):
         except Exception:
             continue
     return synced
+
+
+def _sync_closed_to_ledger(ledger, closed_positions):
+    """Update ledger entries with close info for any positions that were closed."""
+    if not closed_positions:
+        return
+    for cp in closed_positions:
+        tid = cp.get("trade_id")
+        if not tid:
+            continue
+        for t in (ledger.get("trades") or []):
+            if t.get("trade_id") == tid and t.get("status") in ("opened", None):
+                t["status"] = "closed"
+                t["closed_at"] = cp.get("closed_at", _utc_now())
+                t["exit_price"] = cp.get("exit_price")
+                t["pnl_usd"] = cp.get("pnl_usd")
+                t["pnl_pct"] = cp.get("pnl_pct")
+                t["exit_reason"] = cp.get("reason", "manual")
+                break
 
 
 def main():
@@ -790,6 +827,7 @@ def main():
     if args.update:
         closed = update_mark_to_market(portfolio)
         synced = _sync_closed_to_journal(closed)
+        _sync_closed_to_ledger(ledger, closed)
         save_portfolio(portfolio)
         save_ledger(ledger)
         if synced:
@@ -800,15 +838,24 @@ def main():
         for pos in executed:
             ledger["trades"].append(
                 {
-                    "type": "open",
+                    "trade_id": pos.get("trade_id"),
+                    "date": _utc_today(),
                     "symbol": pos.get("symbol"),
                     "name": pos.get("name"),
-                    "allocated": pos.get("allocated"),
+                    "side": "buy",
+                    "type": "open",
                     "entry_price": pos.get("entry_price"),
                     "quantity": pos.get("quantity"),
-                    "opened_at": pos.get("opened_at"),
+                    "allocated": pos.get("allocated"),
                     "stop": pos.get("stop"),
                     "target": pos.get("target"),
+                    "status": "opened",
+                    "opened_at": pos.get("opened_at"),
+                    "closed_at": None,
+                    "exit_price": None,
+                    "pnl_usd": None,
+                    "pnl_pct": None,
+                    "notes": f"Opening recommended setup from briefing {_utc_today()}",
                 }
             )
         save_portfolio(portfolio)
@@ -823,6 +870,7 @@ def main():
     # Default: update + summary
     closed = update_mark_to_market(portfolio)
     synced = _sync_closed_to_journal(closed)
+    _sync_closed_to_ledger(ledger, closed)
     save_portfolio(portfolio)
     save_ledger(ledger)
     if synced:
@@ -843,15 +891,24 @@ def open_today_from_briefing(briefing_path):
         for pos in executed:
             ledger["trades"].append(
                 {
-                    "type": "open",
+                    "trade_id": pos.get("trade_id"),
+                    "date": _utc_today(),
                     "symbol": pos.get("symbol"),
                     "name": pos.get("name"),
-                    "allocated": pos.get("allocated"),
+                    "side": "buy",
+                    "type": "open",
                     "entry_price": pos.get("entry_price"),
                     "quantity": pos.get("quantity"),
-                    "opened_at": pos.get("opened_at"),
+                    "allocated": pos.get("allocated"),
                     "stop": pos.get("stop"),
                     "target": pos.get("target"),
+                    "status": "opened",
+                    "opened_at": pos.get("opened_at"),
+                    "closed_at": None,
+                    "exit_price": None,
+                    "pnl_usd": None,
+                    "pnl_pct": None,
+                    "notes": f"Opening recommended setup from briefing {_utc_today()}",
                 }
             )
     save_portfolio(portfolio)

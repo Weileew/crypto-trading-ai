@@ -18,6 +18,17 @@ Guidelines for pulling free crypto data without signing up for a paid API.
   - VWAP per session
   - Volume profile / volume-weighted price zones
 
+## Derivatives / Futures (NEW in v0.9.0)
+- **Binance Futures** — free public API, no auth required:
+  - Funding rate: `GET https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT`
+  - Open interest: `GET https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT`
+  - Long/short ratio: `GET https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=1h`
+  - No documented rate limit (tested to hundreds of req/min).
+  - See `scripts/free_data.py` `fetch_derivatives_summary()` for a bundled fetch.
+  - Funding rate is per 8h (Binance standard). Annualized = rate × 3 × 365 × 100%.
+  - L/S ratio reflects top 20% traders by account value, not all traders.
+- **CoinGlass** (coinglass.com) — alternative source for funding rates aggregated across exchanges. No auth needed for basic endpoints, but rate limits are tighter than Binance.
+
 ## Liquidity / Exchange
 - **Binance** — primary exchange reference for USDT pair gating (`GET /api/v3/exchangeInfo`). 437 USDT pairs as of mid-2026.
 - **TokoCrypto** — secondary liquidity source with 674 USDT pairs (Binance Cloud-based, Indonesian exchange).

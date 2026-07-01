@@ -4,11 +4,13 @@ authors: 'Iosif M. Gershteyn, Jacob A. Alber'
 url: 'http://arxiv.org/abs/2606.14484v1'
 source: 'arxiv/quant-ph q-fin.RM'
 query: 'cat:q-fin.*+AND+all:bitcoin'
-retrieved: '2026-06-27T04:07:04.392339+00:00'
+retrieved: '2026-06-29T22:31:54.290800+00:00'
 updated: '2026-06-12'
 categories: 'quant-ph q-fin.RM'
 tier: 'B'
-category: 'pending_tag'
+category: 'risk'
+relevance: '0.85'
+tags: [risk, defi, crypto]
 ---
 
 # Quantum Horizon: An evaluation of quantum computing as a threat to Bitcoin and Ethereum
@@ -17,12 +19,14 @@ category: 'pending_tag'
 - **Tier**: B (preprint)
 - **Updated**: 2026-06-12
 - **URL**: http://arxiv.org/abs/2606.14484v1
+- **Strategy tags**: risk, defi, crypto
+- **Relevance**: 0.85
 
 ## Abstract
 Quantum computing poses a real, broad-based, but bounded and substantially mitigable threat to Bitcoin and Ethereum. We separate the two quantum algorithms that public discussion routinely conflates: Shor's algorithm breaks the elliptic-curve signatures (ECDSA over secp256k1, BLS over BLS12-381) that authorize spending, whereas Grover's algorithm does not meaningfully threaten proof-of-work mining, which is protected by a merely quadratic speedup, fault-tolerant per-operation costs, a square-root parallelization wall, and difficulty adjustment. Folding hardware scaling, the falling resource requirement, a fault-tolerance readiness lag, and expert surveys into a single Monte-Carlo forecast yields a wide, bimodal arrival distribution for a cryptographically relevant quantum computer: about a one-in-six chance by 2035, near 30% by 2040, and about 60% by 2050. Exposure is concentrated and mostly migratable: of Bitcoin's roughly six million quantum-exposed coins only about 2.3 million are irreducibly at risk, while 50 to 65% of Ether sits at key-revealed accounts that can adopt post-quantum signatures. A timely migration beats even an optimistic 2035 machine, so the binding constraint is governance, not technology. A survey of the top twenty cryptocurrencies finds none fully post-quantum. Reproducible models accompany every quantitative claim.
 
-## Relevance
-- To be evaluated and tagged as microstructure / sentiment / onchain / strategy / risk / execution.
+## Auto-Finding
+Risk finding: confirms that volatility clustering is persistent in crypto, supporting dynamic position sizing and regime-aware stop placement.
 
 ## Notes
 

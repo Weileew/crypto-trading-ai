@@ -100,18 +100,27 @@ def phase_briefing(params: dict, dry_run: bool = False) -> tuple:
         assets = fetch_coincap(limit=120)
 
         candidates = simple_rules(markets) if isinstance(markets, list) else []
+        
+        # Log market regime info for debugging
+        try:
+            _fng_r = fetch_fear_greed()
+            _fng_v = int(_fng_r.get('value', 50))
+            _fng_c = _fng_r.get('value_classification', '?')
+            print(f"    Market regime: F&G={_fng_v} ({_fng_c})")
+            if not candidates:
+                print(f"    → No candidates (regime gate active)" if _fng_v <= 15 or _fng_v >= 85 else f"    → No candidates found")
+        except Exception:
+            pass
 
         # Apply parameter overrides from strategy params
         max_opps = params.get("screening", {}).get("max_opportunities", 2)
         score_threshold = params.get("screening", {}).get("score_threshold", 20.0)
-        min_change = params.get("screening", {}).get("min_24h_change_pct", 2.0)
 
-        # Re-filter with current params
+        # Re-filter with current params (score threshold only — volatility gate
+        # is already handled by simple_rules() with market-cap-scaled thresholds)
         filtered = []
         for c in (candidates or []):
             if c.get("score", 0) < score_threshold:
-                continue
-            if abs(c.get("change_24h", 0) or 0) < min_change:
                 continue
             filtered.append(c)
         candidates = filtered[:max_opps]
@@ -280,7 +289,7 @@ def phase_adapt(journal, params: dict, dry_run: bool = False) -> dict:
 
 def build_digest(news: list, briefing_text: str, candidates: list,
                  outcomes: list, perf: dict, adapt_result: dict,
-                 params: dict, batch_id: str) -> str:
+                 params: dict, batch_id: str, dashboard_text: str = "") -> str:
     """Build the orchestrator digest report."""
     lines = []
     lines.append("# 📡 Orchestrator Digest")
@@ -300,9 +309,9 @@ def build_digest(news: list, briefing_text: str, candidates: list,
     dr = params.get("dynamic_risk", {})
     if dr.get("enabled"):
         lines.append(f"- Dynamic target/stop: ✅ enabled (range {dr.get('min_target_pct', 5)}%-{dr.get('max_target_pct', 15)}% / {dr.get('min_stop_pct', 2)}%-{dr.get('max_stop_pct', 8)}%)")
-        _ts = dr.get("trailing_stages", [[2, 1], [6, 2], [12, 3]])
-        _ts_str = " → ".join([f"+{s[0]:.0f}%/{s[1]:.0f}%" for s in _ts])
-        lines.append(f"- Trailing stop: {_ts_str}")
+        _trail_stages = dr.get("trailing_stages", [[2, 1], [6, 2], [12, 3]])
+        _trail_stages_str = " → ".join([f"+{s[0]:.0f}%/{s[1]:.0f}%" for s in _trail_stages])
+        lines.append(f"- Trailing stop: {_trail_stages_str}")
     lines.append(f"- Target: {risk.get('target_pct', 0)}%")
     if adapt_result.get("adjusted"):
         lines.append(f"- 🔄 Auto-adjusted: {'; '.join(adapt_result.get('adjustments', []))}")
@@ -318,11 +327,11 @@ def build_digest(news: list, briefing_text: str, candidates: list,
             _trailed = []
             for _sym, _pos in (_port.get("positions") or {}).items():
                 if _pos.get("trailing_activated"):
-                    _ts = _pos.get("trailing_stop")
+                    _trail = _pos.get("trailing_stop")
                     _hp = _pos.get("highest_price")
                     _cur = _pos.get("current_price", 0)
                     _pnl = _pos.get("pnl_pct", 0)
-                    _s = f"🔒 {_sym}: trail=${_ts} (high=${_hp}, curr=${_cur}, P&L={_pnl:+.2f}%)" if _ts else f"🔒 {_sym}: active (P&L={_pnl:+.2f}%)"
+                    _s = f"🔒 {_sym}: trail=${_trail} (high=${_hp}, curr=${_cur}, P&L={_pnl:+.2f}%)" if _trail else f"🔒 {_sym}: active (P&L={_pnl:+.2f}%)"
                     _trailed.append(_s)
             if _trailed:
                 lines.append("### Trailing Stops")
@@ -379,6 +388,39 @@ def build_digest(news: list, briefing_text: str, candidates: list,
     else:
         lines.append("No data yet.")
     lines.append("")
+
+    # Research calibration health
+    # NOTE: Must use importlib.util.spec_from_file_location with absolute path,
+    # NOT "from strategy.portfolio_engine import ...". The orchestrator runs from
+    # the cron environment where STRATEGY_DIR is not in sys.path. The briefing.py
+    # pattern (_lazy_load_portfolio_engine) uses SKILL_DIR-based absolute imports
+    # which work regardless of CWD.working directory.
+    try:
+        import importlib.util as _iu
+        _pe_path = os.path.join(STRATEGY_DIR, "portfolio_engine.py")
+        if os.path.exists(_pe_path):
+            _spec = _iu.spec_from_file_location("portfolio_engine", _pe_path)
+            _pe = _iu.module_from_spec(_spec)
+            _spec.loader.exec_module(_pe)
+            cal_lines, cal_score = _pe.calibration_health()
+            lines.extend(cal_lines)
+            adj = _pe.suggest_adjustments()
+            if adj:
+                for a in adj:
+                    lines.append(f"  → {a}")
+        else:
+            raise ImportError("portfolio_engine.py not found")
+    except Exception as e:
+        lines.append("## Research Calibration Health")
+        lines.append(f"  ℹ️ Calibration check unavailable: {e}")
+    lines.append("")
+
+    # Dashboard (compact mode)
+    if dashboard_text:
+        lines.append("## Strategy Dashboard (compact)")
+        for _dl in dashboard_text.split("\n"):
+            lines.append(f"- {_dl.strip()}")
+        lines.append("")
 
     # Briefing (compact)
     lines.append("## Full Briefing")
@@ -445,9 +487,26 @@ def main():
         adapt_result = phase_adapt(journal, params, dry_run=args.dry_run)
         print()
 
+    # Phase 7: Strategy dashboard (optional, non-fatal)
+    dashboard_text = ""
+    if not args.quick:
+        print("  Generating strategy dashboard...")
+        try:
+            import subprocess
+            _dp = os.path.join(STRATEGY_DIR, "dashboard.py")
+            _res = subprocess.run(
+                [sys.executable, _dp, "--compact"],
+                capture_output=True, text=True, timeout=30,
+                cwd=STRATEGY_DIR,
+            )
+            if _res.returncode == 0 and _res.stdout.strip():
+                dashboard_text = _res.stdout.strip()
+        except Exception as e:
+            print(f"    Dashboard skipped: {e}")
+
     # Build digest
     digest = build_digest(news, briefing_text, candidates, outcomes,
-                          perf, adapt_result, params, batch_id)
+                          perf, adapt_result, params, batch_id, dashboard_text)
 
     # Save digest
     if args.out:

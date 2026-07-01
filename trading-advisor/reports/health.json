@@ -1,5 +1,5 @@
 {
-  "last_heartbeat": "2026-06-27T05:27:51.684395+00:00",
+  "last_heartbeat": "2026-06-29T00:21:46.439506+00:00",
   "generated_by": "health_heartbeat.py",
   "scripts": {
     "pre_market_snapshot.sh": {
@@ -7,20 +7,28 @@
       "last_modified": "2026-06-26T14:02:51.551519+00:00"
     },
     "paper_trader.py": {
-      "size": 18617,
-      "last_modified": "2026-06-27T04:21:03.702057+00:00"
+      "size": 35921,
+      "last_modified": "2026-06-28T17:06:05.518898+00:00"
     },
     "market_snapshot.py": {
       "size": 1713,
       "last_modified": "2026-06-26T14:02:51.527519+00:00"
     },
     "paper_executor.py": {
-      "size": 8883,
-      "last_modified": "2026-06-27T03:34:14.844849+00:00"
+      "size": 9728,
+      "last_modified": "2026-06-28T00:34:11.028846+00:00"
+    },
+    "market_news.py": {
+      "size": 8620,
+      "last_modified": "2026-06-27T07:53:31.740872+00:00"
     },
     "daily_loop.py": {
       "size": 1512,
       "last_modified": "2026-06-27T02:50:36.789912+00:00"
+    },
+    "audit_equity.py": {
+      "size": 6219,
+      "last_modified": "2026-06-27T11:37:20.111016+00:00"
     },
     "improve.py": {
       "size": 2271,
@@ -35,20 +43,28 @@
       "last_modified": "2026-06-26T14:52:53.705330+00:00"
     },
     "signal_validator.py": {
-      "size": 14759,
-      "last_modified": "2026-06-27T03:34:48.023721+00:00"
+      "size": 20134,
+      "last_modified": "2026-06-28T01:37:33.061807+00:00"
+    },
+    "orchestrator.py": {
+      "size": 20574,
+      "last_modified": "2026-06-28T13:17:09.260503+00:00"
     },
     "smoke_test.py": {
-      "size": 5284,
-      "last_modified": "2026-06-27T02:59:21.663897+00:00"
+      "size": 8194,
+      "last_modified": "2026-06-27T09:01:31.201849+00:00"
     },
     "briefing.py": {
-      "size": 19671,
-      "last_modified": "2026-06-27T04:07:34.812171+00:00"
+      "size": 68480,
+      "last_modified": "2026-06-28T17:12:04.929832+00:00"
+    },
+    "strategy_journal.py": {
+      "size": 26789,
+      "last_modified": "2026-06-28T17:06:37.371910+00:00"
     },
     "free_data.py": {
-      "size": 10417,
-      "last_modified": "2026-06-27T02:39:53.999384+00:00"
+      "size": 22362,
+      "last_modified": "2026-06-28T00:43:12.184760+00:00"
     }
   }
 }

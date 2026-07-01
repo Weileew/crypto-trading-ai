@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: ["check", "--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
+        args: ["--check"]
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        args: ["--strict", "--show-error-codes"]
+        additional_dependencies: ["types-requests", "types-pyyaml"]
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        args: ["-q", "--tb=short"]

@@ -1,0 +1,94 @@
+# TOK Trading Advisor — High-Impact Free Tools
+# All packages: free, open source (MIT/BSD/Apache), no registration, no API keys
+# Install: pip install -r requirements-tok.txt
+
+# ============================================================
+# CORE DATA & BACKTEST STACK (highest ROI for TOK)
+# ============================================================
+
+# Polars: 10-50x faster DataFrames than pandas, lazy evaluation, streaming
+# Replaces pandas in free_data.py, paper_trader.py, signal_validator.py
+polars>=1.42.0
+
+# DuckDB: In-process analytical SQL — query journal.db, portfolio.json with zero setup
+# SELECT regime, AVG(pnl), COUNT(*) FROM trades GROUP BY regime
+duckdb>=1.5.0
+
+# VectorBT: Vectorized backtesting on NumPy — replaces custom backtest loops
+# pf = vbt.Portfolio.from_signals(close, entries, exits) → built-in Sharpe, DD, expectancy
+vectorbt>=1.0.0
+
+# Empyrical: Industry-standard risk/performance metrics (Quantopian/zipline lineage)
+# sharpe_ratio(), max_drawdown(), calmar_ratio(), omega_ratio(), sortino_ratio()
+empyrical>=0.5.5
+
+# Optuna: Hyperparameter optimization — walk-forward optimize vol gates, penalty weights
+# study.optimize(objective, n_trials=200) — TPE/CMA-ES samplers, pruning
+optuna>=4.9.0
+
+# ============================================================
+# TECHNICAL INDICATORS (choose ONE)
+# ============================================================
+
+# Option A: pandas-ta-classic — pure Python, 193 indicators, no C deps, on PyPI
+# df.ta.rsi(), df.ta.macd(), df.ta.supertrend() — fork of original pandas-ta
+pandas-ta-classic>=0.1.0
+
+# Option B: TA-Lib — C-speed, 150+ indicators, needs system libta-dev
+# pip install ta-lib  # requires: brew install ta-lib / apt install libta-lib-dev
+# ta-lib>=0.6.8
+
+# ============================================================
+# DEV HYGIENE (catch bugs before cron runs)
+# ============================================================
+
+# Ruff: Lint + format 100x faster than flake8/pylint/black — catches bugs in portfolio_engine, signal_validator
+ruff>=0.15.0
+
+# MyPy: Static type checking — catch Optional[Trade], Dict[str, Signal] bugs pre-runtime
+mypy>=1.15.0
+
+# Pre-commit: Git hooks — ruff check --fix, mypy, pytest -q on every commit
+pre-commit>=4.0.0
+
+# Pytest + parallel: Fast test runs for signal validator, portfolio engine, backtest suites
+pytest>=8.0.0
+pytest-xdist>=3.6.0
+
+# Debugpy: VS Code remote debug — python -m debugpy --listen 5678 -m paper_trader
+debugpy>=1.8.0
+
+# ============================================================
+# OBSERVABILITY (optional but recommended)
+# ============================================================
+
+# Loguru: Structured JSON logs for cron jobs — logger.add("logs/tok_{time}.log", rotation="1 day")
+loguru>=0.7.0
+
+# Rich: Pretty terminal dashboards for paper_trader.py dry-runs
+rich>=13.0.0
+
+# Prometheus client: /metrics endpoint on paper-trader — scrape with promtool or local Grafana
+prometheus-client>=0.21.0
+
+# Datasette: Web UI for journal.db at localhost:8001 — ad-hoc SQL, charts, CSV export
+# datasette>=1.0.0
+
+# ============================================================
+# VERSION PINS (validated 2025-06-30)
+# ============================================================
+# polars==1.42.1
+# duckdb==1.5.4
+# vectorbt==1.0.0
+# empyrical==0.5.5
+# optuna==4.9.0
+# pandas-ta-classic==0.1.0
+# ruff==0.15.20
+# mypy==1.15.0
+# pre-commit==4.0.1
+# pytest==8.3.5
+# pytest-xdist==3.6.1
+# debugpy==1.8.14
+# loguru==0.7.3
+# rich==13.9.4
+# prometheus-client==0.21.1

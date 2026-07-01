@@ -25,6 +25,21 @@ LEDGER_PATH = PAPER_DIR / "ledger.json"
 PORTFOLIO_PATH = PAPER_DIR / "portfolio.json"
 os.makedirs(PAPER_DIR, exist_ok=True)
 
+# CoinGecko price fetching via free_data (shared rate-limited getter)
+import importlib.util as _pe_ilu
+_pe_fd_path = SKILL_DIR / "scripts" / "free_data.py"
+if _pe_fd_path.exists():
+    _pe_spec = _pe_ilu.spec_from_file_location("free_data_pe", str(_pe_fd_path))
+    _pe_mod = _pe_ilu.module_from_spec(_pe_spec)
+    _pe_spec.loader.exec_module(_pe_mod)
+    _get_cg = _pe_mod._get_cg
+    resolve_coin_id = _pe_mod.resolve_coin_id
+    _HAS_LIVE_PRICES = True
+else:
+    _get_cg = None
+    resolve_coin_id = None
+    _HAS_LIVE_PRICES = False
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -61,6 +76,11 @@ def _canonical_bias(bias: str) -> str:
     s = (bias or "").strip().lower()
     if s in {"buy bias", "bullish", "long", "accumulate", "buy"}:
         return s
+    # Handle compound bias strings like "mean-reversion - bullish"
+    if "bullish" in s:
+        return "bullish"
+    if "bearish" in s:
+        return "bearish"
     return s
 
 
@@ -129,6 +149,43 @@ def parse_price(v) -> float | None:
         return None
 
 
+def fetch_live_prices(symbols):
+    """Fetch current prices from CoinGecko for a list of symbol names.
+
+    Returns {uppercase_symbol: price} mapping. Falls back to empty dict
+    if free_data is unavailable or the API call fails.
+    """
+    if not _HAS_LIVE_PRICES or not symbols:
+        return {}
+    cg_ids = []
+    sym_to_cg = {}
+    for s in symbols:
+        label = (s or "").strip().lower()
+        cg_id = resolve_coin_id(label)
+        if cg_id and cg_id not in sym_to_cg:
+            sym_to_cg[cg_id] = s.upper()
+            cg_ids.append(cg_id)
+    if not cg_ids:
+        return {}
+    data = _get_cg(
+        "https://api.coingecko.com/api/v3/simple/price",
+        params={"ids": ",".join(cg_ids), "vs_currencies": "usd"},
+        timeout=20,
+    )
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for cg_id, payload in data.items():
+        if not isinstance(payload, dict):
+            continue
+        p = payload.get("usd")
+        if isinstance(p, (int, float)) and p > 0:
+            orig_sym = sym_to_cg.get(cg_id)
+            if orig_sym:
+                out[orig_sym] = float(p)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
@@ -148,23 +205,49 @@ def open_trades(date: str, recs):
     existing_keys = {
         (t.get("date"), t.get("symbol")) for t in ledger.get("trades", []) if t.get("status") == "opened"
     }
+    # Also check portfolio for any open position with the same symbol (cross-day dedup)
+    portfolio_open_symbols = {
+        s.upper() for s in (portfolio.get("positions") or {}).keys()
+    }
+
+    # Fetch live prices once for all recommended symbols
+    rec_symbols = [r.get("symbol") for r in recs if r.get("symbol")]
+    live_prices = fetch_live_prices(rec_symbols)
+
     for rec in recs:
-        entry = parse_price(rec.get("entry"))
-        stop = parse_price(rec.get("stop"))
-        target = parse_price(rec.get("target"))
-        if entry is None or stop is None or target is None:
+        rec_entry = parse_price(rec.get("entry"))
+        rec_stop = parse_price(rec.get("stop"))
+        rec_target = parse_price(rec.get("target"))
+        if rec_entry is None or rec_stop is None or rec_target is None:
             skipped += 1
             detail.append({"symbol": rec["symbol"], "status": "skipped", "reason": "invalid_price"})
             continue
         key = (date, rec["symbol"])
         if key in existing_keys:
             skipped += 1
-            detail.append({"symbol": rec["symbol"], "status": "skipped", "reason": "already_open"})
+            detail.append({"symbol": rec["symbol"], "status": "skipped", "reason": "already_open_today"})
+            continue
+        # Prevent opening a second position in the same symbol while one is still open
+        if rec["symbol"].upper() in portfolio_open_symbols:
+            skipped += 1
+            detail.append({"symbol": rec["symbol"], "status": "skipped", "reason": "position_already_open_in_portfolio"})
             continue
 
+        # Use live market price as entry, adjust stop/target proportionally
+        live_price = live_prices.get(rec["symbol"].upper())
+        if live_price is not None and live_price > 0 and rec_entry > 0:
+            ratio = live_price / rec_entry
+            entry = round(live_price, 8)
+            stop = round(rec_stop * ratio, 8)
+            target = round(rec_target * ratio, 8)
+        else:
+            entry = rec_entry
+            stop = rec_stop
+            target = rec_target
+
         risk_amount = portfolio.get("cash", 0.0) * RISK_PER_TRADE
-        risk_amount = max(risk_amount, 10.0)                # floor $10
-        risk_amount = min(risk_amount, portfolio.get("cash", 0.0))   # never exceed cash
+        risk_amount = max(risk_amount, 10.0)
+        risk_amount = min(risk_amount, portfolio.get("cash", 0.0))
         qty = risk_amount / entry
         if qty <= 0:
             skipped += 1
@@ -226,8 +309,8 @@ def open_trades(date: str, recs):
         opened += 1
         detail.append({"symbol": rec["symbol"], "status": "opened", "trade_id": trade["trade_id"]})
 
-    _save_json(LEDGER_PATH, ledger)
     _save_json(PORTFOLIO_PATH, portfolio)
+    _save_json(LEDGER_PATH, ledger)
     return {"date": date, "opened": opened, "skipped": skipped, "detail": detail}
 
 

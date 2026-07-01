@@ -1,9 +1,38 @@
-# Paper Trading Pipeline
+## Paper Trading Optimization Philosophy
+
+**Paper trading is a laboratory, not a portfolio.** The goal is to generate enough closed signals to tune the strategy. Never reduce signal volume during a losing streak — that starves the optimization engine.
+
+| State | Signal Volume | M2M | Why |
+|---|---|---|---|
+| 🔶 COLD | **Maximize** | every 15m | More data → faster strategy tuning |
+| ✅ NORMAL | Standard (3 runs/day) | every 30m | Steady state |
+| 🟢 HOT | Standard | every 30m | Capture momentum |
+
+**Only pause signals during CRITICAL drawdown** (≥10% in paper, or any real-money drawdown). In all other states, keep signals flowing. See `references/signal-optimization.md` for the full bottleneck analysis and parameter tuning guide.
+
+## Paper Trading Pipeline
+
+The paper trading system has **two data directories** that must stay in sync:
+
+| Directory | Purpose |
+|-----------|---------|
+| `/home/ubuntu/crypto-trading-ai/trading-advisor/reports/paper_trading/` | Canonical verified data (audited, reconciled) |
+| `/home/ubuntu/.hermes/skills/trading-advisor/reports/paper_trading/` | Cron M2M runtime data (read by `paper-trading-m2m` every 10m) |
+
+**After any manual reconciliation** (see `references/paper-trading-reconciliation.md`), always sync:
+```bash
+cp /home/ubuntu/crypto-trading-ai/trading-advisor/reports/paper_trading/*.json \
+   /home/ubuntu/.hermes/skills/trading-advisor/reports/paper_trading/
+```
+The `crypto-backup-refresh` cron (every 6h) handles this automatically, but manual verification should sync immediately.
 
 ## Files
 - `reports/paper_trading/portfolio.json` — current positions, cash balance, equity
 - `reports/paper_trading/ledger.json` — trade history log
 - `reports/paper_trading/summary_YYYY-MM-DD.md` — daily summaries
+
+## Reconciliation Workflow
+See `references/paper-trading-reconciliation.md` for the complete step-by-step procedure to reconcile `portfolio.json`, `ledger.json`, and `journal.db` when discrepancies are discovered. This workflow was applied during the 2026-06-28 audit.
 
 ## Schema
 
@@ -50,24 +79,32 @@
 
 ## M2M Update Flow
 
+```bash
+# Cron job configuration
+# ~/.hermes/scripts/paper-m2m-update.sh runs every 10m (no_agent mode)
+# Calls: python3 scripts/paper_trader.py --update --summary
 ```
-cron (every 30m, no_agent=True)
-  └─ ~/.hermes/scripts/paper-m2m-update.sh
-       └─ python3 scripts/paper_trader.py --update --summary
-            ├─ load_portfolio()              # load from JSON
-            ├─ update_mark_to_market(portfolio)
-            │    ├─ current_price_map()      # 1 CG /simple/price call
-            │    └─ for each position:
-            │         ├─ fixed stop check   → close("stop-loss")
-            │         ├─ fixed target check  → close("target-hit")
-            │         ├─ trailing stop check:
-            │         │    ├─ track highest_price
-            │         │    ├─ activate at profit >= threshold
-            │         │    ├─ tighten trail on new highs
-            │         │    └─ price < trail  → close("trailing_stop")
-            ├─ save_portfolio()              # persist closed positions
-            ├─ save_ledger()                 # persist trade log
-            └─ format_summary()              # output table with Trail column
+
+See `references/paper-trading-m2m-script.md` for complete cron script documentation including behavior, deliverable format, common issues, and verification commands.
+
+```mermaid
+flowchart TD
+    A[cron (every 10m, no_agent=True)] --> B[~/.hermes/scripts/paper-m2m-update.sh]
+    B --> C[python3 scripts/paper_trader.py --update --summary]
+    C --> D[load_portfolio()]
+    C --> E[update_mark_to_market(portfolio)]
+    E --> F[current_price_map() — 1 CG /simple/price call]
+    F --> G{For each position}
+    G --> H[fixed stop check → close("stop-loss")]
+    G --> I[fixed target check → close("target-hit")]
+    G --> J[trailing stop check]
+    J --> K[track highest_price/lowest_price]
+    J --> L[activate at profit >= threshold]
+    J --> M[tighten trail on new highs]
+    J --> N[price < trail → close("trailing_stop")]
+    E --> O[save_portfolio()]
+    E --> P[save_ledger()]
+    E --> Q[format_summary() — output with Trail column]
 ```
 
 ## Output Format (preferred UX)
@@ -176,6 +213,208 @@ Exit price and reason are explicit columns. P&L% suppressed when empty.
 - Prefer `journal.db` outcomes when `ledger.json` and `portfolio.json` disagree.
 - `journal.db` is append-only and auditable by signal ID; use it as the source of truth for closed trades.
 - Reproducible audit commands: `python3 scripts/paper_trader.py --update --summary` and `python3 scripts/audit_equity.py`.
+
+## Current Audit State (2026-06-28 — this session)
+
+**Portfolio Status:**
+- Starting capital: $10,000
+- Cash: $9,380.63
+- Equity: $9,577.09
+- Return: -4.23%
+- Open positions: 1 (RE, legacy strategy, +2.64%, trailing stop armed at $0.6235)
+
+**Ledger State:**
+- 5 open trades recorded (VELVET×2, MAGMA, SKYAI, RE) — mixed legacy/new schema
+- Legacy trades use `qty`, `stop_loss`, `take_profit` keys
+- Recent RE trade uses correct `stop`/`target` keys
+- No closed trades in ledger (all show `"status": "opened"`)
+
+**Journal State (source of truth):**
+- 9 closed trades recorded (outcomes table)
+- Win rate: ~44% (4 wins, 5 losses from visible data)
+- Exit reasons: `backtest_target` (3 VELVET), `backtest_stop` (3 MAGMA), `trailing_stop` (1 RE), `target-hit` (1 SYRUP), `stop-loss` (1 SKYAI)
+- P&L range: -5.29% to +8.03%
+
+**Key Observations:**
+1. Ledger positions (5) ≠ Portfolio positions (1) — legacy positions in ledger were closed via journal but never removed from ledger.json
+2. Portfolio only shows RE (new position from 2026-06-28 briefing) — older positions were closed by M2M but ledger not cleaned
+3. Journal DB is accurate; ledger has stale "opened" status for closed positions
+4. The -4.23% equity drawdown is primarily cash drag (only ~$191 deployed of $10k capital)
+
+**Action Items:**
+- Run `python3 scripts/audit_equity.py` for full reconciliation
+- Consider purging stale ledger entries that have journal outcomes
+- Monitor if portfolio concurrency limit (3) is blocking new entries
+
+
+## Reconciliation Workflow (2026-06-28 — Complete Procedure)
+
+This is the step-by-step workflow used to fully reconcile portfolio.json, ledger.json, and journal.db after discovering discrepancies.
+
+### Step 1: Load and Inspect All Three Sources
+
+```bash
+# Portfolio (active positions with trailing stop state)
+cat trading-advisor/reports/paper_trading/portfolio.json
+
+# Ledger (trade history with legacy/new mixed schema)
+cat trading-advisor/reports/paper_trading/ledger.json
+
+# Journal DB (source of truth for closed trades)
+cd trading-advisor && python3 -c "
+import sqlite3
+conn = sqlite3.connect('strategy/journal.db')
+cursor = conn.cursor()
+cursor.execute('''
+    SELECT s.symbol, s.entry_price, o.exit_price, o.pnl_pct, o.outcome, o.exit_reason, o.closed_at
+    FROM outcomes o JOIN signals s ON s.id=o.signal_id
+    ORDER BY o.closed_at
+''')
+for row in cursor.fetchall():
+    print(f'{row[0]}: signal_entry={row[1]} exit={row[2]} pnl={row[3]}% outcome={row[4]} reason={row[5]} at={row[6]}')
+"
+```
+
+### Step 2: Dedup Journal Outcomes
+
+Journal may have duplicate outcomes from repeated backtest runs (e.g., VELVET/MAGMA validated 3×). Create a deduped map keyed by `(symbol, signal_entry, exit_price)`:
+
+```python
+seen = set()
+deduped = []
+for outcome in outcomes:
+    key = (outcome['symbol'].upper(), round(outcome['signal_entry'], 6), round(outcome['exit_price'], 6))
+    if key not in seen:
+        seen.add(key)
+        deduped.append(outcome)
+```
+
+### Step 3: Match Ledger Trades to Journal Outcomes (One-to-One)
+
+Each ledger trade should match **at most one** journal outcome. Use entry price proximity (±5%) as the matching key:
+
+```python
+used_outcomes = set()
+for trade in ledger['trades']:
+    sym = trade['symbol'].upper()
+    entry = trade.get('entry_price') or trade.get('avg_entry')
+    for i, outcome in enumerate(deduped):
+        if i in used_outcomes:
+            continue
+        if outcome['symbol'].upper() == sym and entry and abs(entry - outcome['signal_entry']) / max(entry, 1) < 0.05:
+            # MATCH: Update ledger trade with journal outcome
+            trade['status'] = 'closed'
+            trade['closed_at'] = outcome['closed_at']
+            trade['exit_price'] = outcome['exit_price']
+            trade['pnl'] = outcome['pnl_pct']
+            qty = trade.get('qty', trade.get('quantity', 0))
+            trade['pnl_usd'] = round(qty * outcome['exit_price'] - qty * entry, 2)
+            trade['pnl_pct'] = outcome['pnl_pct']
+            trade['exit_reason'] = outcome['exit_reason']
+            used_outcomes.add(i)
+            break
+    else:
+        # NO MATCH: trade is still open or missing from journal
+        print(f'NO MATCH for {sym} entry={entry}')
+```
+
+### Step 4: Fix Portfolio ↔ Ledger Sync
+
+**Case A: Ledger has OPEN trade but Portfolio missing position**
+- Happened with VELVET trade_c453e07e46 (entry 0.709546 from 2026-06-27 briefing)
+- Fix: Reconstruct position in portfolio.json from ledger trade, recalculate cash
+
+**Case B: Portfolio has position but Ledger incorrectly shows CLOSED**
+- Happened with RE trade_197f0ed43e — ledger matched to journal signal with DIFFERENT entry (0.626174 vs 0.616837)
+- Fix: Revert ledger trade to OPEN (null out closed_at, exit_price, pnl, exit_reason)
+
+```python
+# Add missing position to portfolio
+position = {
+    'symbol': trade['symbol'],
+    'name': trade['name'],
+    'quantity': trade.get('qty', trade.get('quantity', 1.0)),
+    'entry_price': trade['entry_price'],
+    'allocated': round(trade.get('qty', trade.get('quantity', 1.0)) * trade['entry_price'], 2),
+    'current_price': trade['entry_price'],
+    'stop': trade.get('stop_loss', trade.get('stop')),
+    'target': trade.get('take_profit', trade.get('target')),
+    'pnl_usd': 0.0,
+    'pnl_pct': 0.0,
+    'status': 'open',
+    'trade_id': trade['trade_id'],
+    'opened_at': trade['opened_at'],
+    'strategy_id': 'legacy',
+    'strategy_snapshot': {},
+    'bias': 'bullish',
+    'highest_price': trade['entry_price'],
+    'lowest_price': None,
+    'trailing_stop': None,
+    'trailing_activated': False
+}
+portfolio['positions'][trade['symbol']] = position
+portfolio['cash'] = round(portfolio['cash'] - position['allocated'], 2)
+```
+
+### Step 5: Run M2M Update to Validate
+
+```bash
+cd /home/ubuntu/crypto-trading-ai && python3 trading-advisor/scripts/paper_trader.py --update --summary
+```
+
+Verify:
+- Open positions match between portfolio and ledger (both OPEN)
+- Closed trades in ledger match journal outcomes exactly
+- P&L calculations are consistent (position quantity × price diff = ledger pnl_usd)
+
+### Step 6: Final Verification Commands
+
+```bash
+# 1. Check portfolio positions
+python3 -c "
+import json
+with open('trading-advisor/reports/paper_trading/portfolio.json') as f:
+    p = json.load(f)
+for sym, pos in p['positions'].items():
+    print(f'{sym}: entry={pos[\"entry_price\"]} current={pos[\"current_price\"]} qty={pos[\"quantity\"]} pnl={pos[\"pnl_pct\"]}%')
+"
+
+# 2. Check ledger trades
+python3 -c "
+import json
+with open('trading-advisor/reports/paper_trading/ledger.json') as f:
+    l = json.load(f)
+for t in l['trades']:
+    print(f'{t[\"symbol\"]}: status={t[\"status\"]} entry={t[\"entry_price\"]} exit={t.get(\"exit_price\")}')
+"
+
+# 3. Run summary
+cd /home/ubuntu/crypto-trading-ai && python3 trading-advisor/scripts/paper_trader.py --update --summary
+```
+
+### Critical Matching Rules
+
+1. **One-to-one matching**: Each journal outcome matches at most one ledger trade. Use a `used_outcomes` set to prevent double-matching.
+2. **±5% entry price tolerance**: Match on `abs(ledger_entry - journal_signal_entry) / max(ledger_entry, 1) < 0.05`
+3. **Symbol case-insensitive**: Compare `.upper()` on both sides
+4. **Revert incorrect matches**: If a ledger trade was matched to a journal outcome with a different entry price, revert to OPEN status
+5. **Journal is source of truth**: When ledger and journal disagree, journal wins for closed trades
+
+### Common Mismatch Patterns Seen
+
+| Pattern | Detection | Fix |
+|---------|-----------|-----|
+| Briefing trade entry ≠ Backtest signal entry | Ledger entry price doesn't match any journal signal_entry ±5% | Keep as OPEN, add to portfolio if missing |
+| Backtest validated 3× same signal | Journal has 3 outcomes with identical (symbol, signal_entry, exit_price) | Dedup journal outcomes before matching |
+| Ledger has legacy schema (`qty`, `stop_loss`) | Keys differ from paper_trader schema (`quantity`, `stop`) | Use `.get('qty', trade.get('quantity'))` pattern |
+| Portfolio missing position from ledger | `portfolio['positions']` empty but ledger has `status=opened` | Reconstruct from ledger, deduct from cash |
+| **Two-directory drift** | Verified data in `/crypto-trading-ai/trading-advisor/reports/paper_trading/` differs from `/home/ubuntu/.hermes/skills/trading-advisor/reports/paper_trading/` | After reconciliation, `cp` both portfolio.json and ledger.json to skill directory; M2M cron runs from skill directory |
+| **Briefing trade hit target after backtest already closed it** | Journal shows backtest outcome (exit=0.6542) then later live M2M outcome (exit=1.78) for same symbol with DIFFERENT entry prices | Match by entry price proximity; briefing trade (0.709546) ≠ backtest signal (0.605781). Both can exist as separate trades |
+| **Journal signal entry ≠ Ledger trade entry for same symbol** | RE: journal signal_entry=0.626174, ledger entry=0.616837 (different briefing runs) | Match by entry price ±5%; if no match, treat as separate independent trades |
+
+### Automation Note
+
+This reconciliation should be automated in `scripts/audit_equity.py`. The manual workflow above documents the exact logic that the audit script should implement for reproducible verification.
 
 ## Position Close Reasons
 

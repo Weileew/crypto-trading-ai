@@ -1,7 +1,7 @@
 {
-  "version": 4,
-  "description": "Live strategy parameters — dynamic target/stop with multi-stage trailing stop lock-in",
-  "last_updated": null,
+  "version": 5,
+  "description": "Live strategy parameters — dynamic target/stop with multi-stage trailing stop lock-in.",
+  "last_updated": "2026-06-29T08:30:00+07:00",
   "screening": {
     "min_mcap": 50000000,
     "min_24h_change_pct": 3.0,
@@ -39,11 +39,5 @@
     "max_consecutive_losses": 5,
     "tighten_multiplier": 1.3,
     "loosen_multiplier": 0.85
-  },
-  "schedule": {
-    "briefing_morning": "0 8 * * *",
-    "briefing_afternoon": "0 14 * * *",
-    "orchestrator_nightly": "30 3 * * *",
-    "validation_hourly": "0 * * * *"
   }
 }

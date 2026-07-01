@@ -14,7 +14,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.request import Request, urlopen
+from urllib.request import urlopen, Request
 from urllib.error import HTTPError
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,89 +22,45 @@ REPORTS_DIR = os.path.join(SKILL_DIR, "reports")
 PERF_PATH = os.path.join(REPORTS_DIR, "signal_performance.json")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-UA = "crypto-trading-advisor/0.1 (+https://example.com)"
-_GLOBAL_LAST = 0.0
-_GLOBAL_SLEEP = 0.6
+# CoinGecko calls use the shared rate-limited getter from free_data
+import importlib.util
+_free_data_sv_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "free_data.py",
+)
+_sv_spec = importlib.util.spec_from_file_location("free_data_sv", _free_data_sv_path)
+_sv_mod = importlib.util.module_from_spec(_sv_spec)
+_sv_spec.loader.exec_module(_sv_mod)
+_get_cg = _sv_mod._get_cg
+_get = _sv_mod._get
+resolve_coin_id = _sv_mod.resolve_coin_id
 
-
-def _throttle():
-    global _GLOBAL_LAST
-    wait = _GLOBAL_SLEEP - (time.time() - _GLOBAL_LAST)
-    if wait > 0:
-        time.sleep(wait)
-
-
-def _get(url, headers=None, params=None, timeout=20, retries=3, backoff=1.25):
-    h = {"User-Agent": UA}
-    if headers:
-        h.update(headers)
-    if params:
-        from urllib.parse import urlencode
-        sep = "&" if "?" in url else "?"
-        url = url + sep + urlencode(params)
-    req = Request(url, headers=h)
-    last = None
-    for attempt in range(1, retries + 1):
-        _throttle()
-        try:
-            with urlopen(req, timeout=timeout) as r:
-                global _GLOBAL_LAST
-                _GLOBAL_LAST = time.time()
-                return json.loads(r.read().decode())
-        except HTTPError as e:
-            _GLOBAL_LAST = time.time()
-            if e.code == 429 or 500 <= e.code < 600:
-                last = e
-                time.sleep(backoff * attempt)
-                continue
-            return {"_http_error": e.code, "url": url}
-        except Exception as e:
-            _GLOBAL_LAST = time.time()
-            last = e
-            time.sleep(backoff * attempt)
-    return {"_fetch_error": str(last), "url": url}
-
-
-ALIAS = {
-    "btc": "bitcoin", "eth": "ethereum", "bnb": "binancecoin", "sol": "solana",
-    "xrp": "ripple", "ada": "cardano", "avax": "avalanche-2", "doge": "dogecoin",
-    "dot": "polkadot", "matic": "matic-network", "link": "chainlink", "uni": "uniswap",
-    "ltc": "litecoin", "atom": "cosmos", "apt": "aptos", "arb": "arbitrum",
-    "op": "optimism", "near": "near", "ftm": "fantom", "icp": "internet-computer",
-    "aave": "aave", "comp": "compound-governance-token", "mkr": "maker", "snx": "havven",
-    "crv": "curve-dao-token", "1inch": "1inch", "enj": "enjincoin", "mana": "decentraland",
-    "sand": "the-sandbox", "gala": "gala", "axs": "axie-infinity", "imx": "immutable-x",
-    "ldo": "lido-dao", "rpl": "rocket-pool", "sui": "sui", "sei": "sei-network",
-    "tia": "celestia", "bonk": "bonk", "wif": "dogwifcoin", "pepe": "pepe",
-    "shib": "shiba-inu", "floki": "floki", "render": "render-token", "rndr": "render-token",
-    "celo": "celo", "osmosis": "osmosis", "inj": "injective-protocol", "ckb": "nervos-network",
-    "ronin": "ronin", "magma": "magma-finance", "velvet": "velvet", "skyai": "skyai",
-    "usdt": "tether", "usdc": "usd-coin", "cro": "crypto-com-chain", "hbar": "hedera-hashgraph",
-    "vet": "vechain", "theta": "theta-token", "fil": "filecoin", "egld": "elrond-erd-2",
-    "algo": "algorand", "nano": "nano", "xlm": "stellar", "trx": "tron",
-    "fxs": "frax-share", "cvx": "convex-finance", "yfi": "yearn-finance",
-    "cake": "pancakeswap-token", "dydx": "dydx", "gmt": "stepn", "stx": "blockstack",
-    "mina": "mina-protocol", "zil": "zilliqa", "waves": "waves", "kava": "kava",
-    "anr": "anr-key", "jup": "jupiter-exchange-solana", "pyth": "pyth-network",
-    "ondo": "ondo-finance", "ena": "ethena", "ethfi": "ether-fi",
-    "pendle": "pendle", "alt": "altlayer", "strk": "starknet",
-    "wld": "worldcoin-org", "manta": "manta-network", "dym": "dymension",
-    "saga": "saga-2", "not": "notcoin", "io": "io-net",
-}
 _DAYS_CAP = 90
 _DAYS_REDUCED = 30
 
 
 def fetch_coingecko_market_chart(coin_id: str, days: int = 30):
-    data = _get(
+    """Fetch price data from CG. Returns OHLCV-compatible format.
+
+    CG market_chart returns [[ts_ms, price], ...] (2 elements per candle).
+    This converts to [ts, close, close, close, close] so the shared
+    backtest() function can use it alongside Binance klines (5-element).
+    """
+    data = _get_cg(
         f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
-        {"vs_currency": "usd", "days": days},
+        params={"vs_currency": "usd", "days": days},
         timeout=25,
         retries=2,
     )
     if not isinstance(data, dict):
         return []
-    return data.get("prices", []) or []
+    prices = data.get("prices", []) or []
+    out = []
+    for entry in prices:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            ts, close = entry[0], entry[1]
+            out.append([int(ts), float(close), float(close), float(close), float(close)])
+    return out
 
 
 def fetch_binance_klines(symbol: str, days: int = 60):
@@ -121,7 +77,7 @@ def fetch_binance_klines(symbol: str, days: int = 60):
     limit = min(max(days, 1), 1000)
     data = _get(
         "https://api.binance.com/api/v3/klines",
-        {"symbol": pair, "interval": "1d", "limit": limit},
+        params={"symbol": pair, "interval": "1d", "limit": limit},
         timeout=20,
         retries=2,
     )
@@ -132,38 +88,6 @@ def fetch_binance_klines(symbol: str, days: int = 60):
         out.append([int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4])])
     return out
 
-
-def _coingecko_search(query: str):
-    data = _get(
-        "https://api.coingecko.com/api/v3/search",
-        {"query": query},
-        timeout=20,
-        retries=2,
-    )
-    if not isinstance(data, dict):
-        return None
-    hits = data.get("coins") or []
-    if not hits:
-        return None
-    top = hits[0]
-    return {
-        "id": top.get("id"),
-        "symbol": top.get("symbol"),
-        "name": top.get("name"),
-    }
-
-
-def resolve_coin_id(sym: str):
-    label = (sym or "").strip().lower()
-    coin_id = ALIAS.get(label, label)
-    if coin_id != label:
-        # ALIAS had a known CoinGecko id — use it directly
-        return coin_id
-    # Unknown ticker — try CG search as fallback
-    hit = _coingecko_search(label)
-    if hit and hit.get("id"):
-        return hit["id"]
-    return coin_id  # still the raw label; may fail on market_chart
 
 
 def load_briefings(days: int = 30):
@@ -226,7 +150,18 @@ def parse_buy_recommendations(text: str):
 
     if current:
         recs.append(current)
-    buy = [r for r in recs if (r.get("bias") or "").lower() in {"buy bias", "bullish", "long", "accumulate", "buy"}]
+    buy = []
+    for r in recs:
+        bias = (r.get("bias") or "").lower()
+        # Normalise compound biases like "mean-reversion - bullish" → "bullish"
+        if "bullish" in bias:
+            bias = "bullish"
+        elif "bearish" in bias:
+            bias = "bearish"
+        if bias not in {"buy bias", "bullish", "long", "accumulate", "buy"}:
+            continue
+        r["bias"] = bias
+        buy.append(r)
     return buy
 
 
@@ -364,6 +299,97 @@ def summarize(signals):
     }
 
 
+def summarize_with_empyrical(signals):
+    """Enhanced summary with empyrical risk metrics.
+
+    Extends the basic summarize() with VaR, CVaR, Sharpe, Sortino,
+    max drawdown, Calmar ratio, and annual volatility.
+
+    Returns dict with keys from summarize() plus:
+        empyrical_available: bool
+        empyrical_metrics: dict with risk metrics or None
+        sample_count: int
+        estimate_unstable: bool (True when sample < 20)
+        avg_win_pct: float or None
+        avg_loss_pct: float or None
+    """
+    base = summarize(signals)
+    validated = [s for s in signals if s.get("validation_status") == "backtested" and s.get("pnl_pct") is not None]
+
+    out = dict(base)
+    out["empyrical_available"] = False
+    out["empyrical_metrics"] = None
+    out["avg_win_pct"] = None
+    out["avg_loss_pct"] = None
+    out["sample_count"] = len(validated)
+    out["estimate_unstable"] = len(validated) < 20
+
+    if not validated:
+        return out
+
+    # Compute avg win/loss
+    wins = [s["pnl_pct"] for s in validated if s.get("pnl_pct", 0) > 0]
+    losses = [s["pnl_pct"] for s in validated if s.get("pnl_pct", 0) < 0]
+    out["avg_win_pct"] = round(sum(wins) / len(wins), 3) if wins else None
+    out["avg_loss_pct"] = round(sum(losses) / len(losses), 3) if losses else None
+
+    # Build returns array for empyrical (as decimals)
+    try:
+        import numpy as np
+        import empyrical as ep
+
+        returns = np.array([s["pnl_pct"] / 100.0 for s in validated], dtype=np.float64)
+
+        if len(returns) < 3:
+            # Too few data points for meaningful empyrical metrics
+            return out
+
+        metrics = {}
+
+        # Core risk metrics
+        metrics["var_95"] = float(ep.value_at_risk(returns, cutoff=0.05))
+        metrics["cvar_95"] = float(ep.conditional_value_at_risk(returns, cutoff=0.05))
+
+        # Returns-based metrics
+        metrics["sharpe"] = float(ep.sharpe_ratio(returns, 0.0))
+        metrics["sortino"] = float(ep.sortino_ratio(returns, 0.0))
+        metrics["max_drawdown"] = float(ep.max_drawdown(returns))
+        metrics["annual_volatility"] = float(ep.annual_volatility(returns))
+        metrics["cagr"] = float(ep.cagr(returns))
+
+        # Calmar ratio (CAGR / max drawdown)
+        dd = metrics["max_drawdown"]
+        cagr_val = metrics["cagr"]
+        if dd is not None and dd != 0 and cagr_val is not None:
+            metrics["calmar"] = round(cagr_val / abs(dd), 3)
+        else:
+            metrics["calmar"] = None
+
+        # Small-sample warning flag
+        # When sample < 20, VaR and CVaR may be identical (single tail event dominates)
+        # and Sharpe/Sortino may be misleadingly high or low.
+        if len(returns) < 20:
+            metrics["_small_sample_warning"] = (
+                f"Only {len(returns)} sample(s). "
+                "VaR/CVaR may be identical due to single-point tail. "
+                "Sharpe/Sortino are unreliable below 20 samples."
+            )
+            # Flag if VaR == CVaR (single tail event)
+            if abs(metrics["var_95"] - metrics["cvar_95"]) < 0.0001:
+                metrics["_var_cvar_identical"] = True
+
+        out["empyrical_available"] = True
+        out["empyrical_metrics"] = metrics
+
+    except ImportError:
+        # empyrical not installed — fall back to basic numpy stats
+        pass
+    except Exception:
+        pass
+
+    return out
+
+
 def main(days: int = 30, max_candles: int = 14):
     briefings = load_briefings(days=days)
     if not briefings:
@@ -479,7 +505,10 @@ def _write_to_journal(signals: list[dict]):
                 reason=f"backtest_{sig.get('exit_reason', 'unknown')}",
             )
         else:
-            # No matching open signal — record a standalone outcome
+            # No matching open signal — check if we already recorded this outcome
+            if mod.signal_exists(symbol=sym, entry_price=entry, tolerance=0.05):
+                continue  # already recorded, skip duplicate
+            # Record a standalone outcome for backtested signals not in the journal
             sid = mod.record_signal(
                 symbol=sym, name=sig.get("name", sym), bias=bias,
                 entry_price=entry, target_price=target, stop_price=stop,
@@ -490,6 +519,7 @@ def _write_to_journal(signals: list[dict]):
             mod.close_signal(
                 signal_id=sid, outcome=outcome, exit_price=exit_price,
                 regime="signal_validator", reason=f"backtest_{sig.get('exit_reason', 'unknown')}",
+                estimated_duration_h=duration_h,
             )
 
 

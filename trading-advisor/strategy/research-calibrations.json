@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "description": "Calibration constants extracted from research corpus — used to parameterize TOK's sizing, regime detection, and sentiment filters.",
+  "last_updated": "2026-06-28",
+  "liquidity": {
+    "spread_threshold_bps": 10.0,
+    "impact_model": "sqrt",
+    "depth_confidence_min_usd": 50000.0,
+    "max_size_penalty": 0.5,
+    "spread_ideal_bps": 3.0,
+    "depth_penalty_max": 0.20,
+    "notes": "Square-root impact law: slippage ≈ sqrt(vol / depth). Spread penalty ramps as (spread - ideal) / (threshold - ideal). Depth penalty 0.20 max for sub-$50K depth. Total penalty capped at 0.50 (half position)."
+  },
+  "regime": {
+    "high_vol_threshold": 0.03,
+    "low_vol_threshold": 0.015,
+    "momentum_window_days": 5,
+    "high_vol_bias": "mean-reversion",
+    "low_vol_bias": "momentum",
+    "neutral_bias": "momentum",
+    "notes": "change_24h is a decimal (0.07 = 7%). High-vol (>3%): mean-reversion papers confirm snap-back after abnormal moves. Low-vol (<1.5%): momentum papers document persistent directional flows."
+  },
+  "sentiment": {
+    "lag_window_hours": 3.0,
+    "decay_half_life_hours": 6.0,
+    "fng_extreme_fear": 20,
+    "notes": "Sentiment-driven price prediction papers show lagged correlation of 2-4h. Fear&Greed <20 is extreme — elevated risk regardless of signal quality."
+  },
+  "execution": {
+    "expected_baseline_spread_bps": 5.0,
+    "anomaly_threshold_sigma": 2.0,
+    "notes": "Median crypto LOB spread ~5bps on liquid pairs per market microstructure papers."
+  },
+  "portfolio": {
+    "concurrency_max": 3,
+    "drawdown_limit_pct": 10.0,
+    "drawdown_sizing_reduction_pct": 50.0,
+    "max_exposure_pct": 20.0,
+    "correlation_threshold": 0.70,
+    "correlation_exposure_penalty": 0.50,
+    "correlation_lookback_days": 30,
+    "notes": "Portfolio-level risk limits. concurrency_max caps open positions. drawdown_limit_pct hard-gates trading. drawdown_sizing_reduction_pct = max score reduction at full drawdown. correlation_threshold: proposed coin with r>0.7 vs existing position gets penalty. correlation_exposure_penalty: fraction of score lost for correlated adds. All thresholds from: crypto-as-asset-class papers on diversification, portfolio concentration limits, and risk budgeting."
+  },
+  "derivatives": {
+    "funding_extreme_positive": 0.001,
+    "funding_positive": 0.0001,
+    "funding_negative": -0.0001,
+    "funding_extreme_negative": -0.001,
+    "ls_crowded_long": 1.5,
+    "ls_crowded_short": 0.67,
+    "notes": "Funding rate thresholds for BTC perpetual (8h period). Values >0.001 (% rate) signal crowded longs — squeeze risk. Values <-0.001 signal crowded shorts — short-squeeze setup. L/S ratio >1.5 = crowded long, <0.67 = crowded short. Thresholds from: derivatives pricing papers on funding rate mean-reversion and position concentration risk."
+  }
+}

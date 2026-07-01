@@ -1,0 +1,205 @@
+{
+  "generated_at": "2026-06-30T15:00:29.356518+00:00",
+  "coins_analyzed": 500,
+  "sweep_results": {
+    "min_change_1.0": {
+      "threshold": 1.0,
+      "passed": 236,
+      "avg_score": 8.5,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_1.5": {
+      "threshold": 1.5,
+      "passed": 210,
+      "avg_score": 9.0,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_2.0": {
+      "threshold": 2.0,
+      "passed": 178,
+      "avg_score": 9.7,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_2.5": {
+      "threshold": 2.5,
+      "passed": 154,
+      "avg_score": 10.3,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_3.0": {
+      "threshold": 3.0,
+      "passed": 130,
+      "avg_score": 11.1,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_3.5": {
+      "threshold": 3.5,
+      "passed": 105,
+      "avg_score": 12.3,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_4.0": {
+      "threshold": 4.0,
+      "passed": 92,
+      "avg_score": 13.0,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_4.5": {
+      "threshold": 4.5,
+      "passed": 78,
+      "avg_score": 14.0,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_5.0": {
+      "threshold": 5.0,
+      "passed": 64,
+      "avg_score": 15.2,
+      "big_movers_total": 80,
+      "big_movers_caught": 64,
+      "catch_rate": 80.0
+    },
+    "min_change_5.5": {
+      "threshold": 5.5,
+      "passed": 56,
+      "avg_score": 16.3,
+      "big_movers_total": 80,
+      "big_movers_caught": 56,
+      "catch_rate": 70.0
+    },
+    "min_change_6.0": {
+      "threshold": 6.0,
+      "passed": 50,
+      "avg_score": 17.3,
+      "big_movers_total": 80,
+      "big_movers_caught": 50,
+      "catch_rate": 62.5
+    },
+    "min_change_6.5": {
+      "threshold": 6.5,
+      "passed": 46,
+      "avg_score": 17.9,
+      "big_movers_total": 80,
+      "big_movers_caught": 46,
+      "catch_rate": 57.5
+    },
+    "min_change_7.0": {
+      "threshold": 7.0,
+      "passed": 45,
+      "avg_score": 18.0,
+      "big_movers_total": 80,
+      "big_movers_caught": 45,
+      "catch_rate": 56.2
+    },
+    "min_change_7.5": {
+      "threshold": 7.5,
+      "passed": 37,
+      "avg_score": 19.5,
+      "big_movers_total": 80,
+      "big_movers_caught": 37,
+      "catch_rate": 46.2
+    },
+    "min_change_8.0": {
+      "threshold": 8.0,
+      "passed": 35,
+      "avg_score": 19.8,
+      "big_movers_total": 80,
+      "big_movers_caught": 35,
+      "catch_rate": 43.8
+    },
+    "score_thresh_10": {
+      "threshold": 10,
+      "passed": 34,
+      "avg_score": 23.0,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_15": {
+      "threshold": 15,
+      "passed": 17,
+      "avg_score": 34.0,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_20": {
+      "threshold": 20,
+      "passed": 12,
+      "avg_score": 40.9,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_25": {
+      "threshold": 25,
+      "passed": 8,
+      "avg_score": 50.1,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_30": {
+      "threshold": 30,
+      "passed": 8,
+      "avg_score": 50.1,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_35": {
+      "threshold": 35,
+      "passed": 4,
+      "avg_score": 67.4,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_40": {
+      "threshold": 40,
+      "passed": 3,
+      "avg_score": 76.9,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_45": {
+      "threshold": 45,
+      "passed": 2,
+      "avg_score": 93.9,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    },
+    "score_thresh_50": {
+      "threshold": 50,
+      "passed": 2,
+      "avg_score": 93.9,
+      "false_positives": 0,
+      "fp_rate": 0.0
+    }
+  },
+  "sector_correlations": {
+    "defi": {
+      "count": 2,
+      "avg_7d_change": 10.8,
+      "direction_alignment": 0.0
+    },
+    "l1": {
+      "count": 7,
+      "avg_7d_change": 5.6,
+      "direction_alignment": 0.67
+    }
+  },
+  "recommendations": [
+    "Optimal min_24h_change_pct=5% (current=3%) \u2014 catches 64 of 80 big movers",
+    "Optimal score_threshold=10 (current=25) \u2014 FP rate 0% at 10"
+  ]
+}

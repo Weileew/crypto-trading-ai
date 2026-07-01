@@ -1,0 +1,172 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tok-trading-advisor"
+version = "2.0.0"
+description = "Welly's TOK crypto trading advisor — swing/day trading with free data, paper trading, and research-backed signals"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Welly", email = "welly@example.com"}]
+requires-python = ">=3.11"
+dependencies = [
+    # Core data & backtest
+    "polars>=1.42.0",
+    "duckdb>=1.5.0",
+    "vectorbt>=1.0.0",
+    "empyrical>=0.5.5",
+    "optuna>=4.9.0",
+    # Technical indicators (choose one)
+    "pandas-ta-classic>=0.1.0",
+    # Dev hygiene
+    "ruff>=0.15.0",
+    "mypy>=1.15.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "pytest-xdist>=3.6.0",
+    "debugpy>=1.8.0",
+    # Observability
+    "loguru>=0.7.0",
+    "rich>=13.0.0",
+    "prometheus-client>=0.21.0",
+    # Existing deps (keep these)
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "feedparser>=6.0.0",
+    "beautifulsoup4>=4.12.0",
+    "sqlite-utils>=3.37.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0.0",
+    "apscheduler>=3.10.0",
+    "python-telegram-bot>=20.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-cov>=4.0.0",
+    "snakeviz>=2.1.0",
+    "py-spy>=0.3.14",
+    "datasette>=1.0.0",
+    "ipython>=8.0.0",
+]
+talib = [
+    "ta-lib>=0.6.8",  # requires system libta-dev
+]
+full = [
+    "polars[all]>=1.42.0",
+    "duckdb[full]>=1.5.0",
+    "vectorbt[all]>=1.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "reports",
+    "*.backup*",
+    "crypto-research",
+    "crypto-research/scripts",
+]
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "T20", # flake8-print
+    "ARG", # flake8-unused-arguments
+    "PTH", # flake8-use-pathlib
+    "ERA", # eradicate
+    "PL",  # pylint
+    "TRY", # tryceratops
+]
+ignore = ["E501", "B008", "SIM103"]
+fixable = ["ALL"]
+unfixable = []
+exclude = [
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "reports",
+    "*.backup*",
+    "crypto-research",
+    "crypto-research/scripts",
+]
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+exclude = [
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "reports",
+    "*.backup*",
+    "crypto-research",
+    "crypto-research/scripts",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true
+show_error_codes = true
+pretty = true
+namespace_packages = true
+explicit_package_bases = true
+follow_imports = "silent"
+exclude = [
+    "reports",
+    ".venv",
+    "venv",
+    "*.backup*",
+    "crypto-research/scripts",
+    "crypto-research",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["scripts", "strategy"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+addopts = "-q --tb=short -n auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.pre-commit]
+repos = [
+    {repo = "https://github.com/astral-sh/ruff-pre-commit", rev = "v0.15.20", hooks = [
+        {id = "ruff", args = ["check", "--fix", "--exit-non-zero-on-fix"]},
+        {id = "ruff-format", args = ["--check"]},
+    ]},
+    {repo = "https://github.com/pre-commit/mirrors-mypy", rev = "v1.15.0", hooks = [
+        {id = "mypy", args = ["--strict", "--show-error-codes"], additional_dependencies = ["types-requests", "types-pyyaml"]},
+    ]},
+    {repo = "local", hooks = [
+        {id = "pytest", name = "pytest", entry = "pytest", language = "system", types = ["python"], pass_filenames = false, args = ["-q", "--tb=short", "--ignore=trading-advisor", "--ignore=crypto-research"]},
+    ]},
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*", "strategy*"]

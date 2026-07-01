@@ -245,8 +245,12 @@ def record_signal(symbol: str, name: str, bias: str, entry_price: float,
 
 
 def close_signal(signal_id: int, outcome: str, exit_price: float = None,
-                 regime: str = "", reason: str = "") -> dict:
-    """Close a signal with its outcome. Returns the outcome record."""
+                 regime: str = "", reason: str = "", estimated_duration_h: float = None) -> dict:
+    """Close a signal with its outcome. Returns the outcome record.
+    
+    If estimated_duration_h is provided (e.g., from backtesting), use it
+    instead of computing wall-clock time from signal creation to now.
+    """
     conn = get_conn()
     row = conn.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
     if not row:
@@ -261,9 +265,13 @@ def close_signal(signal_id: int, outcome: str, exit_price: float = None,
         else:
             pnl_pct = round((entry - exit_price) / entry * 100, 2)
 
-    opened = datetime.fromisoformat(row["generated_at"])
-    closed = datetime.now(timezone.utc)
-    duration_h = round((closed - opened).total_seconds() / 3600, 1)
+    if estimated_duration_h is not None:
+        duration_h = round(estimated_duration_h, 1)
+        closed = datetime.now(timezone.utc)
+    else:
+        opened = datetime.fromisoformat(row["generated_at"])
+        closed = datetime.now(timezone.utc)
+        duration_h = round((closed - opened).total_seconds() / 3600, 1)
 
     now_iso = closed.isoformat()
     conn.execute(
@@ -315,12 +323,106 @@ def get_all_signals(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def signal_exists(symbol: str, entry_price: float, tolerance: float = 0.05) -> bool:
+    """Check if any signal (open or closed) exists for symbol + entry within tolerance.
+
+    Used by paper_trader._sync_closed_to_journal to prevent creating duplicate
+    standalone signal+close entries when a position is re-closed at the same price
+    (e.g. trailing-stop re-trigger after a portfolio reload bug).
+    """
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT 1 FROM signals s
+           WHERE s.symbol = ?
+           AND s.entry_price IS NOT NULL
+           AND ABS(s.entry_price - ?) / MAX(ABS(s.entry_price), 0.001) < ?
+           LIMIT 1""",
+        (symbol, entry_price, tolerance),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def get_loss_penalties(days: int = 14) -> dict:
+    """Return {symbol: penalty_score} based on recency and severity of losses.
+
+    Each loss contributes: penalty = min(abs(pnl_pct) * 2, 30) × recency_factor
+    where recency_factor decays from 1.0 (today) to 0.0 (after `days` days).
+    Total penalty per symbol is capped at 40.
+
+    This lets the scoring system naturally deprioritize bad picks without
+    hard-blocking — a coin with strong enough momentum can overcome its past.
+    """
+    conn = get_conn()
+    from datetime import timedelta, datetime as _dt
+    now = _dt.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT s.symbol, o.pnl_pct, o.closed_at
+           FROM outcomes o
+           JOIN signals s ON s.id = o.signal_id
+           WHERE o.closed_at >= ?
+           AND o.outcome = 'hit_stop'
+           ORDER BY o.closed_at DESC""",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+
+    penalties = {}
+    for r in rows:
+        sym = r["symbol"]
+        pnl = abs(r["pnl_pct"] or 0)
+        closed = r["closed_at"]
+        try:
+            closed_dt = _dt.fromisoformat(closed) if closed else now
+        except Exception:
+            closed_dt = now
+        days_ago = max(0, (now - closed_dt).total_seconds() / 86400)
+        recency = max(0, 1.0 - days_ago / days)
+        per_loss = min(pnl * 2, 30) * recency
+        penalties[sym] = min(penalties.get(sym, 0) + per_loss, 40)
+
+    return penalties
+
+
+def get_recent_winners(days: int = 30) -> set:
+    """Return set of symbol names that won (hit_target, trailing_stop, or expired+pnl>0) in the last N days.
+
+    Used by simple_rules() to give a small score boost to proven winners,
+    creating a virtuous quality cycle without hard-blocking new coins.
+    """
+    conn = get_conn()
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT DISTINCT s.symbol
+           FROM outcomes o
+           JOIN signals s ON s.id = o.signal_id
+           WHERE o.closed_at >= ?
+           AND (o.outcome IN ('hit_target', 'trailing_stop')
+                OR (o.outcome = 'expired' AND (o.pnl_pct IS NOT NULL AND o.pnl_pct > 0)))""",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return {r["symbol"] for r in rows}
+
+
 # ---------------------------------------------------------------------------
 # Performance computation
 # ---------------------------------------------------------------------------
 
-def compute_performance(period: str = "all_time") -> dict:
-    """Compute performance metrics for a given period."""
+def compute_performance(period: str = "all_time", exclude_sources=None) -> dict:
+    """Compute performance metrics for a given period.
+
+    Args:
+        period: 'all_time', 'trailing_30d', 'trailing_7d'
+        exclude_sources: list of signal sources to exclude (e.g., ['signal_validator']).
+                        Defaults to excluding 'signal_validator' so live metrics
+                        don't include backtest quality-gate data.
+    """
+    if exclude_sources is None:
+        exclude_sources = ['signal_validator']
+
     conn = get_conn()
 
     if period == "all_time":
@@ -334,19 +436,31 @@ def compute_performance(period: str = "all_time") -> dict:
     else:
         cutoff = "1970-01-01"
 
+    # Build source exclusion clause
+    placeholders = ','.join('?' for _ in exclude_sources)
+    source_filter = f"AND s.source NOT IN ({placeholders})" if exclude_sources else ""
+
     # Closed signals with PnL in period
     rows = conn.execute(
-        """SELECT s.symbol, s.bias, o.outcome, o.pnl_pct, o.duration_hours
+        f"""SELECT s.symbol, s.bias, o.outcome, o.pnl_pct, o.duration_hours, s.source
            FROM outcomes o
            JOIN signals s ON s.id = o.signal_id
-           WHERE s.generated_at >= ?""",
-        (cutoff,),
+           WHERE s.generated_at >= ? {source_filter}""",
+        (cutoff,) + tuple(exclude_sources),
     ).fetchall()
 
     total = len(rows)
-    closed = [r for r in rows if r["outcome"] in ("hit_target", "hit_stop", "expired")]
-    wins = [r for r in closed if r["outcome"] == "hit_target"]
-    losses = [r for r in closed if r["outcome"] in ("hit_stop", "expired")]
+    # Categorize outcomes:
+    #   hit_target          → win
+    #   trailing_stop       → win (locked-in profit)
+    #   expired + pnl > 0   → win (expired in profit)
+    #   expired + pnl <= 0  → loss
+    #   hit_stop            → loss
+    closed = [r for r in rows if r["outcome"] in ("hit_target", "hit_stop", "trailing_stop", "expired")]
+    wins = [r for r in closed if r["outcome"] == "hit_target" or r["outcome"] == "trailing_stop" or 
+            (r["outcome"] == "expired" and (r["pnl_pct"] or 0) > 0)]
+    losses = [r for r in closed if r["outcome"] == "hit_stop" or 
+              (r["outcome"] == "expired" and (r["pnl_pct"] or 0) <= 0)]
 
     win_count = len(wins)
     loss_count = len(losses)
@@ -378,19 +492,25 @@ def compute_performance(period: str = "all_time") -> dict:
     worst_sym = min(sym_pnl, key=lambda s: sum(sym_pnl[s]) / len(sym_pnl[s])) if sym_pnl else ""
 
     # Current streak
+    placeholders = ','.join('?' for _ in exclude_sources)
+    source_filter = f"AND s.source NOT IN ({placeholders})" if exclude_sources else ""
     recent = conn.execute(
-        """SELECT o.outcome FROM outcomes o
+        f"""SELECT o.outcome, o.pnl_pct FROM outcomes o
            JOIN signals s ON s.id = o.signal_id
-           WHERE s.generated_at >= ?
+           WHERE s.generated_at >= ? {source_filter}
            ORDER BY o.closed_at DESC
            LIMIT 20""",
-        (cutoff,),
+        (cutoff,) + tuple(exclude_sources),
     ).fetchall()
     streak = 0
     for r in recent:
-        if r["outcome"] == "hit_target":
+        outcome = r["outcome"]
+        pnl = r["pnl_pct"] or 0
+        is_win = outcome in ("hit_target", "trailing_stop") or (outcome == "expired" and pnl > 0)
+        is_loss = outcome == "hit_stop" or (outcome == "expired" and pnl <= 0)
+        if is_win:
             streak = streak + 1 if streak >= 0 else 1
-        elif r["outcome"] in ("hit_stop", "expired"):
+        elif is_loss:
             streak = streak - 1 if streak <= 0 else -1
         else:
             break

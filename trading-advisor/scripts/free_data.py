@@ -59,6 +59,72 @@ def _get(url, params=None, headers=None, timeout=20, retries=3, backoff=1.25):
             time.sleep(backoff * attempt)
     return {"_fetch_error": str(last_err), "_url": url}
 
+
+# ── CG-specific rate limiter (6s spacing, daily budget tracker) ──
+_CG_LAST_CALL = 0.0
+_CG_SLEEP = 6.0  # CG free tier: ~10 req/min → 6s min spacing
+_CG_DAILY_COUNTER_PATH = os.path.join(REPORTS_DIR, "cg_call_count.json")
+_CG_MAX_DAILY = 500  # safety threshold (actual free limit is ~14,400)
+
+
+def _wait_cg():
+    global _CG_LAST_CALL
+    wait = _CG_SLEEP - (time.time() - _CG_LAST_CALL)
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _count_cg_call():
+    """Increment daily CG call counter. Logs warning at 90% of threshold."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    try:
+        with open(_CG_DAILY_COUNTER_PATH) as f:
+            data = json.load(f)
+    except Exception:
+        data = {"date": today, "count": 0}
+    if data.get("date") != today:
+        data = {"date": today, "count": 0}
+    data["count"] += 1
+    # Warn at 90% of threshold
+    if data["count"] >= int(_CG_MAX_DAILY * 0.9) and data["count"] % 10 == 0:
+        print(f"  ⚠️ CG calls today: {data['count']}/{_CG_MAX_DAILY} (90%+ of safety threshold)")
+    with open(_CG_DAILY_COUNTER_PATH, "w") as f:
+        json.dump(data, f)
+    return data["count"]
+
+
+def _get_cg(url, params=None, timeout=25, retries=3):
+    """CG-specific GET with 6s spacing, exponential backoff, call counter."""
+    _count_cg_call()
+    h = {"User-Agent": UA}
+    if params:
+        from urllib.parse import urlencode
+        sep = "&" if "?" in url else "?"
+        url = url + sep + urlencode(params)
+    req = Request(url, headers=h)
+    last_err = None
+    for attempt in range(1, retries + 1):
+        _wait_cg()
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                global _CG_LAST_CALL
+                _CG_LAST_CALL = time.time()
+                return json.loads(resp.read().decode())
+        except HTTPError as e:
+            _CG_LAST_CALL = time.time()
+            if e.code == 429 or 500 <= e.code < 600:
+                last_err = e
+                time.sleep(3.0 * attempt)  # aggressive backoff for CG
+                continue
+            return {"_http_error": e.code, "_url": url}
+        except Exception as e:
+            _CG_LAST_CALL = time.time()
+            last_err = e
+            time.sleep(2.0 * attempt)
+            continue
+    return {"_fetch_error": str(last_err), "_url": url}
+
 def fetch_coingecko_markets(vs_currency="usd", per_page=250, page=1):
     data = _get("https://api.coingecko.com/api/v3/coins/markets", {
         "vs_currency": vs_currency,
@@ -424,6 +490,276 @@ def save(data, filename="latest_market_data.json"):
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"as_of": now_iso(), "data": data}, f, indent=2, default=str)
     return path
+
+
+# ── On-Chain Data (free, no auth) ─────────────────────────────────────────────
+# Mempool.space — BTC fee estimates, no API key needed
+
+_MEMPOOL_BASE = "https://mempool.space/api"
+
+
+def fetch_btc_fees():
+    """Return current BTC fee estimates from mempool.space.
+
+    Returns dict {fastestFee, halfHourFee, hourFee, economyFee, minimumFee}
+    all in sat/vB, or {"_error": "..."} on failure.
+    """
+    return _get(f"{_MEMPOOL_BASE}/v1/fees/recommended", timeout=15, retries=2)
+
+
+def fetch_mempool_stats() -> dict:
+    """Fetch BTC mempool fee data and format for briefing.
+
+    Returns dict with keys: fees_ok, fastest, hour, summary, icon
+    All keys present; failed fetches return empty dict.
+    """
+    fees = fetch_btc_fees()
+    if not isinstance(fees, dict) or "_error" in fees or "fastestFee" not in fees:
+        return {}
+
+    fastest = fees.get("fastestFee", 0)
+    hour = fees.get("hourFee", 0)
+    economy = fees.get("economyFee", 0)
+
+    # Interpret fee levels
+    if fastest > 100:
+        icon = "⚠️"
+        summary = "high congestion"
+    elif fastest > 30:
+        icon = "🟡"
+        summary = "elevated"
+    elif fastest > 10:
+        icon = "🟢"
+        summary = "moderate"
+    else:
+        icon = "🟢"
+        summary = "low"
+
+    return {
+        "fees_ok": True,
+        "fastest": fastest,
+        "hour": hour,
+        "economy": economy,
+        "summary": summary,
+        "icon": icon,
+    }
+
+
+# ── Derivatives Data (free, no auth) ──────────────────────────────────────────
+# Binance Futures public API — funding rate, open interest, long/short ratio
+_FAPI_BASE = "https://fapi.binance.com"
+
+
+def fetch_funding_rate(symbol="BTCUSDT", limit=1):
+    """Return latest funding rate for a perpetual futures pair.
+
+    Args:
+        symbol: e.g. 'BTCUSDT', 'ETHUSDT'
+        limit: number of historical records (1 = latest only)
+
+    Returns:
+        dict with {symbol, fundingRate (str), fundingTime, markPrice}
+        or {"_error": "..."} on failure.
+    """
+    return _get(
+        f"{_FAPI_BASE}/fapi/v1/fundingRate",
+        {"symbol": symbol.upper(), "limit": min(limit, 100)},
+        timeout=15, retries=2
+    )
+
+
+def fetch_open_interest(symbol="BTCUSDT"):
+    """Return current open interest for a perpetual futures pair.
+
+    Returns dict with {symbol, openInterest (str), time}
+    or {"_error": "..."} on failure.
+    """
+    return _get(
+        f"{_FAPI_BASE}/fapi/v1/openInterest",
+        {"symbol": symbol.upper()},
+        timeout=15, retries=2
+    )
+
+
+def fetch_long_short_ratio(symbol="BTCUSDT", period="1h", limit=1):
+    """Return top trader long/short position ratio.
+
+    Returns list of dicts with {symbol, longAccount, shortAccount,
+    longShortRatio, timestamp} or {"_error": "..."} on failure.
+    """
+    return _get(
+        f"{_FAPI_BASE}/futures/data/topLongShortPositionRatio",
+        {"symbol": symbol.upper(), "period": period, "limit": min(limit, 500)},
+        timeout=15, retries=2
+    )
+
+
+def interpret_funding_rate(rate_str: str) -> tuple:
+    """Interpret a funding rate string into a human signal.
+
+    Args:
+        rate_str: e.g. "0.00004284" (decimal, 8h period)
+
+    Returns:
+        (signal_label, signal_icon, annualized_pct)
+        signal_label: one of "extreme positive", "positive", "neutral",
+                      "negative", "extreme negative"
+        signal_icon: 🟢/🟡/🔴/⚠️
+        annualized_pct: the rate annualized (×3 for 8h periods × 365)
+    """
+    try:
+        rate = float(rate_str)
+    except (TypeError, ValueError):
+        return "unknown", "⚪", 0.0
+
+    # Binance funding is per 8h. Annualized = rate * 3 * 365
+    annualized = rate * 3 * 365 * 100  # in percent
+
+    if rate > 0.001:      # >0.1% per 8h → extreme positive (crowded long)
+        return "extreme positive", "⚠️", annualized
+    elif rate > 0.0001:   # >0.01% per 8h → positive
+        return "positive", "🟢", annualized
+    elif rate > -0.0001:  # near zero → neutral
+        return "neutral", "🟡", annualized
+    elif rate > -0.001:   # >-0.1% → negative
+        return "negative", "🔴", annualized
+    else:                 # < -0.1% → extreme negative (crowded short)
+        return "extreme negative", "⚠️", annualized
+
+
+def fetch_derivatives_summary(symbol="BTCUSDT") -> dict:
+    """Fetch funding rate, OI, and long/short ratio in a single call batch.
+
+    Returns dict with keys: funding_rate, oi_btc, oi_usd, ls_ratio,
+    ls_signal, signal, annualized_pct
+    All keys present; failed fetches return None for that key.
+    """
+    out = {"symbol": symbol}
+
+    # Funding rate
+    fr = fetch_funding_rate(symbol, limit=1)
+    if isinstance(fr, list) and len(fr) > 0:
+        rate_str = fr[0].get("fundingRate", "0")
+        out["funding_rate"] = float(rate_str)
+        signal, icon, ann = interpret_funding_rate(rate_str)
+        out["funding_signal"] = signal
+        out["funding_icon"] = icon
+        out["annualized_pct"] = round(ann, 1)
+    else:
+        out["funding_rate"] = None
+
+    # Open interest
+    oi = fetch_open_interest(symbol)
+    if isinstance(oi, dict) and "openInterest" in oi:
+        try:
+            oi_btc = float(oi["openInterest"])
+            out["oi_btc"] = round(oi_btc, 1)
+            # Use latest mark price from funding rate to estimate USD value
+            mark = None
+            if isinstance(fr, list) and len(fr) > 0:
+                mark = float(fr[0].get("markPrice", 0))
+            if mark:
+                out["oi_usd"] = round(oi_btc * mark, 0)
+            out["oi_btc"] = out.get("oi_btc")  # already set
+        except (ValueError, TypeError):
+            out["oi_btc"] = None
+    else:
+        out["oi_btc"] = None
+
+    # Long/short ratio
+    ls = fetch_long_short_ratio(symbol, limit=1)
+    if isinstance(ls, list) and len(ls) > 0:
+        try:
+            ratio = float(ls[0].get("longShortRatio", 1.0))
+            out["ls_ratio"] = round(ratio, 3)
+            if ratio > 1.5:
+                out["ls_signal"] = "crowded long"
+            elif ratio > 1.2:
+                out["ls_signal"] = "leaning long"
+            elif ratio < 0.67:
+                out["ls_signal"] = "crowded short"
+            elif ratio < 0.8:
+                out["ls_signal"] = "leaning short"
+            else:
+                out["ls_signal"] = "balanced"
+        except (ValueError, TypeError):
+            out["ls_ratio"] = None
+    else:
+        out["ls_ratio"] = None
+
+    return out
+
+
+# ── Shared coin alias resolution (single source of truth) ───────────
+_COIN_ALIASES_CACHE = None
+
+
+def _load_coin_aliases():
+    """Load & cache the shared coin_aliases.json (singleton)."""
+    global _COIN_ALIASES_CACHE
+    if _COIN_ALIASES_CACHE is not None:
+        return _COIN_ALIASES_CACHE
+    alias_path = os.path.join(SKILL_DIR, "strategy", "coin_aliases.json")
+    try:
+        with open(alias_path) as f:
+            raw = json.load(f)
+    except Exception:
+        raw = {}
+    _COIN_ALIASES_CACHE = {k: v for k, v in raw.items() if v is not None}
+    return _COIN_ALIASES_CACHE
+
+
+def resolve_coin_id(sym: str) -> str:
+    """Resolve a ticker symbol -> CoinGecko coin ID.
+
+    Three-tier resolution:
+    1.  Shared coin_aliases.json (single source of truth).
+    2.  Smart CG search — scans up to 10 results, picks the one whose
+        *symbol* matches the query (avoids short-ticker errors where
+        the top search result is a completely different coin).
+    3.  Falls through with the raw symbol (may fail on CG candle fetch,
+        then Binance klines fallback catches it).
+    """
+    label = (sym or "").strip().lower()
+    aliases = _load_coin_aliases()
+    if label in aliases:
+        return aliases[label]
+
+    hit = _smart_coingecko_search(label)
+    if hit:
+        return hit
+    return label
+
+
+def _smart_coingecko_search(query: str):
+    """Search CG and scan top results for an exact symbol match."""
+    try:
+        data = _get(
+            "https://api.coingecko.com/api/v3/search",
+            params={"query": query},
+            timeout=15,
+            retries=2,
+        )
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    coins = data.get("coins") or []
+    ql = query.lower()
+    for c in coins[:10]:
+        sym = (c.get("symbol") or "").lower()
+        if sym == ql:
+            return c.get("id")
+        name = (c.get("name") or "").lower()
+        if ql in name and len(ql) > 3:
+            return c.get("id")
+    if coins:
+        top = coins[0]
+        top_sym = (top.get("symbol") or "").lower()
+        if len(ql) >= 3 and (top_sym.startswith(ql) or ql.startswith(top_sym)):
+            return top.get("id")
+    return None
+
 
 if __name__ == "__main__":
     print("Fetching Coingecko markets...")
