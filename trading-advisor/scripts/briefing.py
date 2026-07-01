@@ -1500,6 +1500,9 @@ def render_briefing(markets, global_data, fng, assets, compact=False, visuals=Fa
             adj_target_pct = min(15.0, max(5.0, base_target * vol_factor * score_rr))
             _rms = _regime_max_stop(int(fng.get('value', 50)) if isinstance(fng, dict) else 50)
             adj_stop_pct = min(_rms, max(2.0, base_stop * (vol_factor ** 0.5) - max(0, (score - 25) * 0.03)))
+            # Store on coin so Watch Levels and other sections reuse this (single source of truth)
+            c["_computed_target_pct"] = adj_target_pct
+            c["_computed_stop_pct"] = adj_stop_pct
             if direction == "bearish":
                 target_price = round(entry * (1 - adj_target_pct / 100), 6)
                 stop_price = round(entry * (1 + adj_stop_pct / 100), 6)
