@@ -1815,15 +1815,23 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
                         if _sym and _toko_price and _toko_price > 0:
                             _toko_price_map[_sym] = float(_toko_price)
                     _refreshed = 0
+                    _toko_refreshed = set()  # symbols that got live TokoCrypto data
                     for _sym, _pos in _positions.items():
                         _fresh_price = _toko_price_map.get(_sym.upper())
                         if _fresh_price:
+                            _toko_refreshed.add(_sym.upper())
                             _old_price = _pos.get("current_price", 0)
                             if abs(_fresh_price - _old_price) / max(_old_price, 0.0001) > 0.001:  # >0.1% change
                                 _refreshed += 1
                             _pos["current_price"] = round(_fresh_price, 8)
                             _pos["pnl_usd"] = round(_pos["quantity"] * _pos["current_price"] - _pos["allocated"], 2)
                             _pos["pnl_pct"] = round((_pos["pnl_usd"] / _pos["allocated"]) * 100, 2) if _pos["allocated"] else 0.0
+                        else:
+                            _pos["_toko_stale"] = True  # only cg/cached data available
+                    # Staleness guard: flag ANY position without fresh TokoCrypto data
+                    _all_stale = not _toko_refreshed and bool(_positions)  # true if market feed was entirely missing
+                    if _all_stale:
+                        txt.append("⚠️ Position prices not refreshed — TokoCrypto market data unavailable. Values may be stale.")
                     if _refreshed:
                         # Persist refreshed prices so m2m and next briefing pick them up
                         with open(_pfolio_path, "w", encoding="utf-8") as _pf:
@@ -1852,7 +1860,8 @@ def render_compact_briefing(markets, global_data, fng, assets, visuals=False, en
                             _trail_s = ""
                         _highest = _pos.get("highest_price")
                         _highest_s = f" · high=${_highest}" if _highest else ""
-                        txt.append(f"- {_icon} {_sym}: {_pnl:+.2f}% (entry=${_entry} → ${_cur}){_highest_s}{_trail_s}")
+                        _stale_flag = " ⚠️" if _pos.get("_toko_stale") else ""
+                        txt.append(f"- {_icon} {_sym}: {_pnl:+.2f}% (entry=${_entry} → ${_cur}){_highest_s}{_trail_s}{_stale_flag}")
                     txt.append(f"  Equity: ${_equity:,.2f} · Cash: ${_cash:,.2f} · Positions: {len(_positions)} · Updated: {_pfolio_ts}")
                     txt.append("")
                     # Stash red-count for portfolio-health synthesis in Opportunities section
